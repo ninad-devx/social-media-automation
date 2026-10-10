@@ -17,7 +17,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
     <nav className="sidebar" aria-label="Main navigation">
       <div className="sidebar__brand">
         <span className="brand__mark" aria-hidden="true">
-          <img src="/logo.svg" alt="" width={30} height={30} />
+          <img src="/logo.png" alt="" width={30} height={30} />
         </span>
         {!collapsed && (
           <span className="brand__text">

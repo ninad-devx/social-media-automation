@@ -44,12 +44,11 @@
   width: 2.5rem;
   height: 2.5rem;
   flex: 0 0 auto;
-  border-radius: var(--r-lg);
-  /* Same as the sidebar: the Geekssort logo fills the box instead of an
-     indigo gradient tile. Dimensions are unchanged, so the header does not
-     shift. */
+  /* The logo is a transparent PNG, so there is no tile behind it and no
+     shadow: a drop shadow around a transparent-background image draws a
+     visible square halo. The box keeps its exact dimensions, so the header
+     does not move. */
   background: transparent;
-  box-shadow: var(--sh-sm);
 }
 
 .auth-card__mark img {

@@ -63,7 +63,7 @@ export function LoginPage() {
       <Card className="auth-card">
         <div className="auth-card__brand">
           <span className="auth-card__mark" aria-hidden="true">
-            <img src="/logo.svg" alt="" width={40} height={40} />
+            <img src="/logo.png" alt="" width={40} height={40} />
           </span>
           <div>
             <h1 className="auth-card__title">Geekssort</h1>
