@@ -148,7 +148,12 @@ def list_media(
     return [MediaAssetOut.model_validate(a, from_attributes=True) for a in rows]
 
 
-@router.get("/media/{asset_id}", dependencies=[ApiKeyDep])
+@router.api_route(
+    "/media/{asset_id}",
+    methods=["GET", "HEAD"],
+    response_class=FileResponse,
+    dependencies=[ApiKeyDep],
+)
 def get_media(asset_id: str, settings: SettingsDep) -> FileResponse:
     """Serve an uploaded file."""
     storage = build_storage(settings)
@@ -169,7 +174,11 @@ def get_media(asset_id: str, settings: SettingsDep) -> FileResponse:
     )
 
 
-@router.get("/media/public/{asset_id}")
+@router.api_route(
+    "/media/public/{asset_id}",
+    methods=["GET", "HEAD"],
+    response_class=FileResponse,
+)
 def get_media_public(
     asset_id: str,
     request: Request,

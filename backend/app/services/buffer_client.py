@@ -100,6 +100,46 @@ mutation CreatePost($input: CreatePostInput!) {
 
 
 # --------------------------------------------------------------------------- #
+# Scheduling
+# --------------------------------------------------------------------------- #
+def _due_at_epoch(scheduled_local: str | None, timezone: str | None) -> int:
+    """Convert a local wall-clock time to the Unix epoch Buffer expects.
+
+    Buffer's `DateTime` scalar is epoch seconds, not an ISO string. Sending
+    "2026-10-11T02:08:00" is rejected with
+    `DateTime cannot represent ...`.
+
+    The value arrives as a naive local time plus the IANA zone the operator
+    chose, so it is localised here before being turned into an absolute
+    instant. Naive datetimes are interpreted in `timezone`, defaulting to UTC
+    rather than the machine's local zone, which on a container is never the
+    operator's zone.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    raw = (scheduled_local or "").strip()
+    if not raw:
+        raise BufferApiError("BUFFER_BAD_REQUEST", "A schedule time is required.")
+
+    text = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise BufferApiError(
+            "BUFFER_BAD_REQUEST", f"Could not read the schedule time '{raw}'."
+        ) from exc
+
+    if parsed.tzinfo is None:
+        try:
+            parsed = parsed.replace(tzinfo=ZoneInfo(timezone or "UTC"))
+        except Exception:
+            parsed = parsed.replace(tzinfo=ZoneInfo("UTC"))
+
+    return int(parsed.timestamp())
+
+
+# --------------------------------------------------------------------------- #
 # Results
 # --------------------------------------------------------------------------- #
 class BufferApiError(RuntimeError):
@@ -345,7 +385,7 @@ class BufferClient:
             "source": f"app:{source_suffix}" if source_suffix else "app",
         }
         if not now_mode:
-            post_input["dueAt"] = scheduled_local
+            post_input["dueAt"] = _due_at_epoch(scheduled_local, timezone)
         if assets:
             post_input["assets"] = assets
 
