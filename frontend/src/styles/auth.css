@@ -1,0 +1,152 @@
+/* ==========================================================================
+   Operator sign-in.
+
+   Built only from existing tokens (--c-*, --s-*, --r-*, --t-*, --sh-*) so the
+   login screen matches the app in both light and dark mode, since the dark
+   overrides in tokens.css mirror every colour used here.
+   ========================================================================== */
+
+.auth-page {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--s-6) var(--s-4);
+  background: var(--c-bg);
+  /* A very soft accent wash so the screen does not read as a broken app. */
+  background-image:
+    radial-gradient(
+      60rem 32rem at 50% -12rem,
+      var(--c-accent-soft) 0%,
+      transparent 70%
+    );
+}
+
+.auth-card {
+  width: 100%;
+  max-width: 25rem;
+  padding: var(--s-8) var(--s-7);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface);
+}
+
+/* ---- header ----------------------------------------------------------- */
+.auth-card__brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  margin-bottom: var(--s-6);
+}
+
+.auth-card__mark {
+  width: 2.5rem;
+  height: 2.5rem;
+  flex: 0 0 auto;
+  border-radius: var(--r-lg);
+  background: linear-gradient(140deg, var(--c-accent) 0%, var(--c-accent-active) 100%);
+  box-shadow: var(--sh-sm);
+}
+
+.auth-card__title {
+  margin: 0;
+  font-size: var(--t-lg);
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--c-text);
+  letter-spacing: -0.01em;
+}
+
+.auth-card__subtitle {
+  margin: 2px 0 0;
+  font-size: var(--t-sm);
+  color: var(--c-text-muted);
+}
+
+.auth-card__status {
+  margin: 0;
+  text-align: center;
+  font-size: var(--t-sm);
+  color: var(--c-text-muted);
+}
+
+/* ---- form ------------------------------------------------------------- */
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+}
+
+.auth-form .input {
+  height: 2.6rem;
+  font-size: var(--t-md);
+}
+
+.auth-form .input:focus {
+  outline: none;
+  border-color: var(--c-accent);
+  box-shadow: var(--sh-focus);
+}
+
+.auth-form .btn {
+  margin-top: var(--s-1);
+  height: 2.6rem;
+}
+
+/* ---- "not configured" notice ------------------------------------------ */
+.auth-card__notice {
+  padding: var(--s-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-warning-border, var(--c-border));
+  background: var(--c-warning-soft, var(--c-surface-2));
+  font-size: var(--t-sm);
+  color: var(--c-text-secondary);
+}
+
+.auth-card__notice p {
+  margin: 0;
+}
+
+.auth-card__notice-title {
+  font-weight: 600;
+  color: var(--c-text);
+  margin-bottom: var(--s-1) !important;
+}
+
+.auth-card__notice code {
+  font-family: var(--font-mono);
+  font-size: var(--t-xs);
+  padding: 1px 5px;
+  border-radius: var(--r-sm);
+  background: var(--c-surface-3);
+  color: var(--c-text);
+}
+
+/* ---- topbar account cluster ------------------------------------------- */
+.topbar__account {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding-left: var(--s-3);
+  margin-left: var(--s-2);
+  border-left: 1px solid var(--c-border);
+}
+
+.topbar__username {
+  font-size: var(--t-sm);
+  color: var(--c-text-secondary);
+  font-weight: 550;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  /* The username is the first thing to go on a narrow screen; the sign-out
+     button must stay reachable. */
+  .topbar__username {
+    display: none;
+  }
+}

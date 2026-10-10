@@ -8,6 +8,7 @@ from app.api import (
     ai_campaigns,
     ai_instructions,
     ai_providers,
+    auth,
     channels,
     integrations,
     media,
@@ -16,6 +17,10 @@ from app.api import (
 )
 
 api_router = APIRouter()
+# Auth routes are deliberately NOT behind ApiKeyDep: a browser that is not yet
+# signed in has to be able to reach /auth/login, and /auth/status has to answer
+# the "am I signed in?" question before any credential exists.
+api_router.include_router(auth.router)
 api_router.include_router(accounts.router)
 api_router.include_router(channels.router)
 api_router.include_router(publishing.router)

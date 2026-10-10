@@ -32,5 +32,9 @@ pytest-asyncio==0.25.0
 # Encrypts AI provider API keys at rest (Fernet).
 cryptography==44.0.0
 
+# Argon2id password hashing for the operator login (RFC 9106, OWASP baseline:
+# 64 MiB, 3 passes, 4 lanes). Only the single operator row uses it.
+argon2-cffi==23.1.0
+
 # Renders generated social images and validates uploads.
 pillow==11.1.0

@@ -1,9 +1,26 @@
 import { useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Navigate, Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
+import { useAuth } from "../../hooks/useAuth";
 
 export function AppShell() {
   const [collapsed, setCollapsed] = useState(false);
+  const { user, loading, signOut } = useAuth();
+
+  // Hold the whole shell until the session probe finishes. Without this the
+  // app would flash its chrome and then bounce to /login a moment later,
+  // which looks like a bug rather than a sign-in.
+  if (loading) {
+    return (
+      <div className="auth-page">
+        <p className="auth-card__status">Loading…</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
 
   return (
     <div className={`shell ${collapsed ? "shell--collapsed" : ""}`}>
@@ -20,6 +37,16 @@ export function AppShell() {
           </button>
           <div className="topbar__spacer" />
           <EngineStatus />
+          <div className="topbar__account">
+            <span className="topbar__username">{user.username}</span>
+            <button
+              type="button"
+              className="btn btn--ghost btn--sm"
+              onClick={() => void signOut()}
+            >
+              Sign out
+            </button>
+          </div>
         </header>
         <main className="shell__content">
           <Outlet />

@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
+import { LoginPage } from "./pages/LoginPage";
 import { QuickPublishPage } from "./pages/QuickPublishPage";
 import { DashboardPage } from "./pages/DashboardPage";
 import { PostsPage } from "./pages/PostsPage";
@@ -17,6 +18,14 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/*
+          /login is a SIBLING of the AppShell layout route, not a child.
+          A child would be swallowed by the catch-all below and redirected
+          straight back to "/", which is exactly where an unauthenticated
+          visitor is being sent.
+        */}
+        <Route path="/login" element={<LoginPage />} />
+
         <Route element={<AppShell />}>
           <Route index element={<QuickPublishPage />} />
           <Route path="dashboard" element={<DashboardPage />} />

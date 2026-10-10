@@ -81,6 +81,27 @@ class Settings(BaseSettings):
     # Leave empty for local development. Set to enable header auth for /api.
     api_key: str | None = None
 
+    # ---- Operator login -------------------------------------------------
+    # Single-operator authentication for the browser UI. There is NO default
+    # password and no seeded account: if APP_ADMIN_PASSWORD is unset no
+    # operator exists, the login screen says so, and the /api routes remain
+    # reachable only through API_KEY.
+    auth_enabled: bool = True
+    # Plaintext here only at first boot: it is hashed immediately and only the
+    # Argon2id hash is stored. Changing it later rotates the password and
+    # invalidates every existing session.
+    app_admin_password: str | None = None
+    app_admin_username: str = "admin"
+    app_admin_display_name: str | None = None
+    # Lifetime of a signed-in browser session, in hours.
+    auth_session_ttl_hours: int = 12
+    # "lax" is right when the frontend and API share a registrable domain,
+    # which is the case for two *.onrender.com hosts. Use "none" only when they
+    # do not; browsers then require Secure.
+    auth_cookie_samesite: str = "lax"
+    # Must be true in production: Render terminates TLS in front of the app.
+    auth_cookie_secure: bool = False
+
     # ---- Publishing defaults -------------------------------------------
     default_timezone: str = "Asia/Dhaka"
     # Guards against scheduling further out than this many days.
@@ -174,6 +195,31 @@ class Settings(BaseSettings):
             raise ValueError("publish_engine must be 'n8n' or 'direct'")
         return v
 
+    @field_validator("auth_cookie_samesite")
+    @classmethod
+    def _valid_samesite(cls, v: str) -> str:
+        v = (v or "lax").strip().lower()
+        if v not in ("lax", "strict", "none"):
+            raise ValueError("auth_cookie_samesite must be 'lax', 'strict' or 'none'")
+        return v
+
+    @property
+    def has_admin_password(self) -> bool:
+        """Whether a first-boot operator can be created."""
+        return bool(self.app_admin_password)
+
+    @property
+    def auth_cookie_secure_effective(self) -> bool:
+        """Secure flag forced on whenever cookies leave over HTTPS.
+
+        A production deployment behind TLS termination must never emit a
+        cookie the browser will send over plain HTTP, and must never emit
+        SameSite=None without Secure (browsers reject that outright).
+        """
+        if self.is_production:
+            return True
+        return self.auth_cookie_secure
+
     @field_validator("buffer_api_base_url")
     @classmethod
     def _strip_trailing_slash(cls, v: str) -> str:
@@ -266,6 +312,23 @@ class Settings(BaseSettings):
                 "front of the service."
             )
 
+        if self.auth_enabled and not self.has_admin_password:
+            problems.append(
+                "AUTH is enabled but APP_ADMIN_PASSWORD is not set, so no "
+                "operator exists and the login screen will refuse every "
+                "password. Set APP_ADMIN_PASSWORD to a strong value (12+ "
+                "characters, letters and numbers)."
+            )
+
+        if self.has_admin_password:
+            from app.services.auth_service import password_problem
+
+            problem = password_problem(self.app_admin_password or "")
+            if problem:
+                problems.append(
+                    f"APP_ADMIN_PASSWORD is too weak. {problem}"
+                )
+
         origins = self.cors_origin_list
         if "*" in origins:
             problems.append(
@@ -326,6 +389,12 @@ class Settings(BaseSettings):
             warnings.append(
                 "N8N_WEBHOOK_SECRET is unset; the webhook accepts unauthenticated "
                 "publish requests."
+            )
+
+        if self.auth_enabled and not self.has_admin_password:
+            warnings.append(
+                "AUTH is enabled but APP_ADMIN_PASSWORD is unset, so the login "
+                "screen cannot succeed. Only API_KEY holders can reach the API."
             )
 
         return warnings

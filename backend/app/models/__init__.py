@@ -6,6 +6,7 @@ from app.models.ai_entities import (
     ChannelInstructions,
     GlobalInstructions,
 )
+from app.models.auth_entities import Operator, OperatorSession
 from app.models.entities import (
     Account,
     Channel,
@@ -28,4 +29,6 @@ __all__ = [
     "ChannelInstructions",
     "Campaign",
     "CampaignPost",
+    "Operator",
+    "OperatorSession",
 ]

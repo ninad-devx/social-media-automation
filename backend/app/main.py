@@ -53,10 +53,27 @@ async def lifespan(_: FastAPI):
 
     from app.database.seed import seed
     from app.database.session import init_db, session_scope
+    from app.services import auth_service
 
     init_db()
     with session_scope() as db:
         seed(db)
+        # Create the operator on first boot from APP_ADMIN_PASSWORD. There is
+        # no default password: if the variable is unset this does nothing and
+        # the login screen explains that no operator is configured.
+        #
+        # Idempotent, and it re-hashes when the configured password changes,
+        # which is how rotating APP_ADMIN_PASSWORD actually takes effect.
+        if settings.has_admin_password:
+            auth_service.ensure_operator(
+                db,
+                username=settings.app_admin_username,
+                password=settings.app_admin_password,
+                display_name=settings.app_admin_display_name or settings.app_admin_username,
+            )
+        purge = auth_service.purge_expired_sessions(db)
+        if purge:
+            logger.info("auth.sessions_purged", extra={"context": {"removed": purge}})
 
     log_event(
         logger,
@@ -65,6 +82,9 @@ async def lifespan(_: FastAPI):
         n8n_configured=bool(settings.n8n_publish_webhook_url),
         database_url_scheme=settings.database_url.split("://", 1)[0],
         cors_origins=settings.cors_origin_list,
+        # Booleans only - never the password, the key or the username.
+        operator_configured=bool(settings.has_admin_password),
+        auth_enabled=settings.auth_enabled,
     )
     yield
     log_event(logger, "app.shutdown")

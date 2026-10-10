@@ -45,7 +45,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const finalHeaders: Record<string, string> = { Accept: "application/json", ...headers };
   if (body !== undefined) finalHeaders["Content-Type"] = "application/json";
 
-  // Optional app-level key. Empty in local development.
+  // Optional app-level key. Only needed for service-to-service style access;
+  // an interactive user is identified by the session cookie set at login.
   const apiKey = import.meta.env.VITE_API_KEY;
   if (apiKey) finalHeaders["X-API-Key"] = apiKey;
 
@@ -55,6 +56,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       method,
       headers: finalHeaders,
       signal,
+      // Sends the HttpOnly session cookie. Without this a cross-origin
+      // request (the deployed frontend and API are different hosts) would
+      // reach the backend anonymous and every call would 401.
+      credentials: "include",
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   } catch (err) {
@@ -75,18 +80,45 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
 
   if (!response.ok) {
+    // 401 has a specific meaning now: the session is missing or expired, and
+    // the app should show the login screen rather than a generic error.
+    if (response.status === 401) {
+      notifySessionExpired();
+    }
     const fallback: ApiErrorBody = {
       success: false,
       request_id: response.headers.get("X-Request-Id") ?? "",
       error: {
-        code: response.status === 404 ? "NOT_FOUND" : "INTERNAL_ERROR",
-        message: "Something went wrong. Please try again.",
+        code: response.status === 404 ? "NOT_FOUND" : response.status === 401 ? "UNAUTHORIZED" : "INTERNAL_ERROR",
+        message:
+          response.status === 401
+            ? "Your session has ended. Please sign in again."
+            : "Something went wrong. Please try again.",
       },
     };
     throw new ApiError((payload as ApiErrorBody) ?? fallback, response.status);
   }
 
   return payload as T;
+}
+
+/**
+ * Lets AuthProvider learn that a request came back 401 without every caller
+ * having to handle it. Set by main.tsx's provider; a no-op when absent so the
+ * module stays usable in isolation.
+ */
+let onUnauthorized: (() => void) | null = null;
+
+export function setUnauthorizedHandler(fn: (() => void) | null) {
+  onUnauthorized = fn;
+}
+
+function notifySessionExpired() {
+  try {
+    onUnauthorized?.();
+  } catch {
+    /* a broken handler must never turn a 401 into a crash */
+  }
 }
 
 export const api = {

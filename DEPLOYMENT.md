@@ -169,12 +169,62 @@ Required — the backend **refuses to start** without these:
 | `DATABASE_URL` | The Supabase URI from §4, with `+psycopg` |
 | `CREDENTIAL_ENCRYPTION_KEY` | From §2 |
 | `API_KEY` | From §2 |
+| **`APP_ADMIN_PASSWORD`** | **Your login password.** See §5a. |
+| `APP_ADMIN_USERNAME` | `admin` (or your choice) |
 | `CORS_ORIGINS` | `https://<your-frontend>.onrender.com` |
 | `INTERNAL_SERVICE_SECRET` | From §2 |
 | `N8N_PUBLISH_WEBHOOK_URL` | `https://<your-n8n>.onrender.com/webhook/social/publish` |
 | `N8N_BACKEND_BASE_URL` | `https://<your-backend>.onrender.com` |
 | `PREVIEW_MEDIA_BASE_URL` | `https://<your-backend>.onrender.com/api/media` |
 | `PUBLIC_API_BASE_URL` | `https://<your-backend>.onrender.com` |
+
+### 5a. Signing in
+
+The app has a real login, not a shared key pasted into a browser.
+
+`APP_ADMIN_PASSWORD` is hashed with **Argon2id** (64 MiB, 3 passes) on first
+boot. Only the hash is stored. There is **no default password** — if the
+variable is unset, no operator exists and the login screen says so instead of
+accepting anything.
+
+Generate one:
+
+```bash
+python -c "import secrets;print(secrets.token_urlsafe(18))"
+```
+
+Startup **refuses to boot** if it is shorter than 12 characters, all letters or
+all digits, or an obvious choice like `changeme`.
+
+**Keep it in a password manager.** Changing it later rotates the stored hash and
+immediately signs out every device — which is also how you recover from a
+suspected compromise.
+
+How it works:
+
+- Logging in sets an **HttpOnly, Secure, SameSite=Lax** cookie holding a
+  256-bit token. Only a SHA-256 hash of that token is persisted, so a database
+  leak cannot be replayed as a login.
+- The token is **never** returned in a response body, so injected script cannot
+  read it.
+- Sessions live in the database, so they survive a redeploy.
+- 8 wrong passwords lock the account for 15 minutes (persisted, survives
+  restart); 10 attempts from one IP are throttled for 5 minutes.
+- Login never reveals whether a username exists.
+
+Two credentials are accepted on `/api/*`, so nothing existing broke:
+
+| Credential | Used by |
+| --- | --- |
+| Session cookie | The browser |
+| `X-API-Key` | Service-to-service callers, existing scripts |
+
+`API_KEY` remains required so `/api` is never anonymous. `GET /api/health`
+stays open so Docker and Render health checks keep working.
+
+> Both services live on `*.onrender.com`, so `AUTH_COOKIE_SAMESITE=lax` is
+> correct. If you ever move the frontend to a different registrable domain,
+> set it to `none` (the backend forces `Secure` in production).
 
 Strongly recommended:
 
@@ -196,8 +246,8 @@ catches the most damaging mistake — a deploy that starts happily against an
 ephemeral SQLite file and loses every account on the next restart.
 
 It rejects: SQLite `DATABASE_URL`, a missing encryption key, a missing
-`API_KEY`, empty or wildcard `CORS_ORIGINS`, and `PUBLISH_ENGINE=n8n` with no
-`INTERNAL_SERVICE_SECRET`.
+`API_KEY`, a missing or weak `APP_ADMIN_PASSWORD`, empty or wildcard
+`CORS_ORIGINS`, and `PUBLISH_ENGINE=n8n` with no `INTERNAL_SERVICE_SECRET`.
 
 Non-blocking warnings are logged for a loopback `PUBLIC_MEDIA_BASE_URL`,
 `MEDIA_STORAGE_BACKEND=local`, and a missing `N8N_WEBHOOK_SECRET`.
@@ -338,9 +388,10 @@ Test **Quick Publisher** on a single channel before scheduling anything.
 | --- | --- |
 | Backend is up | `GET https://<backend>/api/health` → `{"status":"ok"}` |
 | Database reachable | Same response, `"database":"ok"` |
-| Frontend loads | Open the static site; the dashboard renders |
-| Frontend talks to the backend | Dashboard shows your accounts |
-| API key enforced | `curl https://<backend>/api/accounts` → `401` |
+| Frontend loads | Open the static site; the **login screen** appears |
+| Sign in | Enter your `APP_ADMIN_USERNAME` / `APP_ADMIN_PASSWORD` |
+| Anonymous access blocked | Open a private window → `/api/accounts` returns `401` |
+| Expired session | Sign out, then refresh — you land back on the login screen |
 | Everything wired | **Settings → Overview** in the UI |
 | n8n reachable | Overview → *Test n8n connection* |
 | Credentials decryptable | Overview → *Credential encryption: On* |
@@ -466,10 +517,15 @@ workflows live in its own database.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| "Login is not configured" | `APP_ADMIN_PASSWORD` unset | Set it on the backend and redeploy |
+| Login always 401 | wrong password, or the account locked | 8 failures lock it 15 min; wait or restart to clear |
+| Login page loops back to itself | `CORS_ORIGINS` missing the frontend origin | Add the exact origin and redeploy |
+| Uploads fail but the page loads | media XHR missing credentials | fixed in `services/media.ts`; redeploy the frontend |
 | `Refusing to start in production` | Startup validation | Read the log; it names the exact variable to set |
 | Site loads, every request fails CORS | `CORS_ORIGINS` missing the frontend origin | Add the exact origin, including `https://`, and redeploy |
 | Frontend talks to the old backend | `VITE_API_BASE_URL` is a build-time variable | Change it under **Build** settings and redeploy |
-| `401` on every call | `API_KEY` set on one side only | `VITE_API_KEY` must equal the backend's `API_KEY` |
+| `401` on every call | not signed in, or `API_KEY` set on one side only | `VITE_API_KEY` must equal the backend's `API_KEY` |
+| Session drops on every navigation | cookie blocked cross-site | set `AUTH_COOKIE_SAMESITE=none` (backend forces Secure) |
 | n8n says `localhost` cannot connect | `SMA_BACKEND_URL` is a loopback address | Use the backend's public URL |
 | n8n returns "Not authorised" to the workflow | Secrets do not match | `SMA_INTERNAL_SECRET` must equal `INTERNAL_SERVICE_SECRET` |
 | `/internal/publish` returns 404 | `INTERNAL_SERVICE_SECRET` unset on the backend | Set it, or set `PUBLISH_ENGINE=direct` |

@@ -39,6 +39,11 @@ export function uploadMedia(
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", `${API_BASE}/api/media/upload`);
+    // XMLHttpRequest defaults withCredentials to false, so without this the
+    // session cookie is not sent and every upload 401s in production. The
+    // shared fetch wrapper sets the equivalent for `fetch` calls; this path
+    // bypasses it entirely.
+    xhr.withCredentials = true;
 
     const apiKey = import.meta.env.VITE_API_KEY;
     if (apiKey) xhr.setRequestHeader("X-API-Key", apiKey);
@@ -81,6 +86,7 @@ export function deleteMedia(assetId: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("DELETE", `${API_BASE}/api/media/${encodeURIComponent(assetId)}`);
+    xhr.withCredentials = true;
     const apiKey = import.meta.env.VITE_API_KEY;
     if (apiKey) xhr.setRequestHeader("X-API-Key", apiKey);
     xhr.onload = () => (xhr.status < 300 ? resolve() : reject(new Error("Delete failed")));
