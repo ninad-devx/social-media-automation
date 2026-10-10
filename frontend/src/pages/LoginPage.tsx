@@ -62,10 +62,12 @@ export function LoginPage() {
     <div className="auth-page">
       <Card className="auth-card">
         <div className="auth-card__brand">
-          <span className="auth-card__mark" aria-hidden="true" />
+          <span className="auth-card__mark" aria-hidden="true">
+            <img src="/logo.svg" alt="" width={40} height={40} />
+          </span>
           <div>
-            <h1 className="auth-card__title">Social Media Automation</h1>
-            <p className="auth-card__subtitle">Sign in to continue</p>
+            <h1 className="auth-card__title">Geekssort</h1>
+            <p className="auth-card__subtitle">Social Media Automation</p>
           </div>
         </div>
 

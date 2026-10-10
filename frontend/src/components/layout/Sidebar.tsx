@@ -17,11 +17,11 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
     <nav className="sidebar" aria-label="Main navigation">
       <div className="sidebar__brand">
         <span className="brand__mark" aria-hidden="true">
-          <IconSparkle />
+          <img src="/logo.svg" alt="" width={30} height={30} />
         </span>
         {!collapsed && (
           <span className="brand__text">
-            <span className="brand__name">Pulse</span>
+            <span className="brand__name">Geekssort</span>
             <span className="brand__tag">Social OS</span>
           </span>
         )}

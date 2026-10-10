@@ -174,7 +174,7 @@ class Settings(BaseSettings):
     # gives stable, permanently public URLs.
     media_storage_backend: str = "local"
 
-    # Bucket name, e.g. "pulse-media".
+    # Bucket name, e.g. "geekssort-media".
     s3_bucket: str = ""
     # Cloudflare R2: https://<account>.r2.cloudflarestorage.com
     # AWS S3:      https://s3.<region>.amazonaws.com

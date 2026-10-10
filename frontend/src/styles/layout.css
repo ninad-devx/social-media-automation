@@ -41,8 +41,19 @@
   height: 30px;
   flex-shrink: 0;
   border-radius: var(--r-md);
-  background: var(--c-accent);
+  /* Now that the mark holds the Geekssort logo rather than a white glyph on
+     an indigo tile, the tile background is dropped. The box keeps its exact
+     dimensions, so nothing around it moves. */
+  background: transparent;
   color: #fff;
+}
+
+/* The logo is a circle, so it fills the 30px box and inherits the rounding. */
+.brand__mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
 }
 
 .brand__text {

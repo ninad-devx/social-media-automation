@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="Geekssort">
+  <title>Geekssort</title>
+
+  <!-- Outer ring -->
+  <circle cx="50" cy="50" r="45.5" fill="none" stroke="#10D9A3" stroke-width="4.5"/>
+
+  <!--
+    The "G" body: one stroke that opens on the right side. It starts at the
+    upper right, sweeps the long way counter-clockwise over the top, down the
+    left and around the bottom, then rises on the right to meet the crossbar.
+  -->
+  <path
+    d="M70 27.5 A26.5 26.5 0 1 0 73 48.5"
+    fill="none"
+    stroke="#10D9A3"
+    stroke-width="12.5"
+    stroke-linecap="butt"/>
+
+  <!--
+    Crossbar: a wedge running left from the end of the arc toward the centre.
+    Drawn as a filled shape so it tapers, the way the original does, instead of
+    ending as a blunt round cap.
+  -->
+  <path d="M73 48.5 L47 42.5 L47 55 Z" fill="#10D9A3"/>
+
+  <!-- Tapered swirl filling the lower-left opening of the G -->
+  <path
+    d="M41.5 58 A17 17 0 0 0 30.5 44"
+    fill="none"
+    stroke="#10D9A3"
+    stroke-width="7"
+    stroke-linecap="round"/>
+</svg>

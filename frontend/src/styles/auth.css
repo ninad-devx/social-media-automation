@@ -45,8 +45,18 @@
   height: 2.5rem;
   flex: 0 0 auto;
   border-radius: var(--r-lg);
-  background: linear-gradient(140deg, var(--c-accent) 0%, var(--c-accent-active) 100%);
+  /* Same as the sidebar: the Geekssort logo fills the box instead of an
+     indigo gradient tile. Dimensions are unchanged, so the header does not
+     shift. */
+  background: transparent;
   box-shadow: var(--sh-sm);
+}
+
+.auth-card__mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
 }
 
 .auth-card__title {
