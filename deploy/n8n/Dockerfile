@@ -42,4 +42,13 @@ EXPOSE 5678
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
     CMD node -e "fetch('http://127.0.0.1:'+(process.env.N8N_PORT||5678)+'/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["n8n"]
+# NO CMD override here on purpose.
+#
+# The official image already ends with `tini -- /docker-entrypoint.sh`, and that
+# entrypoint runs `n8n` itself when it receives no arguments. Adding
+# `CMD ["n8n"]` passes "n8n" as $1, which the entrypoint tries to execute as a
+# script, and the container exits with code 1 - which Render reports as
+# `nonZeroExit: 1` with no log output.
+#
+# Override the command in the dashboard or with the `dockerCommand` field only
+# if you genuinely need arguments.

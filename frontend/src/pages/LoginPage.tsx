@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { Navigate, useNavigate } from "react-router-dom";
 import { Button, Card, Field } from "../components/ui";
 import { useAuth } from "../hooks/useAuth";
 
@@ -12,7 +13,8 @@ import { useAuth } from "../hooks/useAuth";
  * it says so instead of showing a password box that can never succeed.
  */
 export function LoginPage() {
-  const { signIn, enabled, loading } = useAuth();
+  const { user, signIn, enabled, loading } = useAuth();
+  const navigate = useNavigate();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +27,12 @@ export function LoginPage() {
     setSubmitting(true);
     try {
       const result = await signIn(username.trim(), password);
-      if (!result.ok) {
+      if (result.ok) {
+        // The session cookie is set and the provider now holds a user. Without
+        // this the URL stays on /login and the screen never changes, which
+        // looks exactly like a failed login.
+        navigate("/", { replace: true });
+      } else {
         setError(result.message ?? "We couldn't sign you in. Please try again.");
         // Clear only the password: the username is almost certainly right and
         // retyping it is pure friction.
@@ -36,6 +43,7 @@ export function LoginPage() {
     }
   }
 
+  // Already signed in (or the session came back from a cookie): go to the app.
   if (loading) {
     return (
       <div className="auth-page">
@@ -44,6 +52,10 @@ export function LoginPage() {
         </Card>
       </div>
     );
+  }
+
+  if (user) {
+    return <Navigate to="/" replace />;
   }
 
   return (

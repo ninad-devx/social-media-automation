@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import { LoginPage } from "./pages/LoginPage";
 import { QuickPublishPage } from "./pages/QuickPublishPage";
@@ -16,7 +16,7 @@ import { CampaignHistoryPage, CampaignDetailPage } from "./pages/CampaignHistory
 
 export default function App() {
   return (
-    <BrowserRouter>
+    <HashRouter>
       <Routes>
         {/*
           /login is a SIBLING of the AppShell layout route, not a child.
@@ -49,6 +49,6 @@ export default function App() {
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>
-    </BrowserRouter>
+    </HashRouter>
   );
 }
