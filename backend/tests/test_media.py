@@ -135,17 +135,31 @@ def test_upload_reports_public_reachability(client: TestClient, monkeypatch: pyt
     assert "Buffer" in body["warning"]
 
 
-def test_preview_url_always_targets_this_api(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Thumbnails must not use the public URL: a tunnel can serve an HTML
-    interstitial to browsers while serving the real file to Buffer."""
+def test_preview_url_is_fetchable_without_any_auth_header(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preview is rendered by an <img> tag, which cannot send X-API-Key.
+
+    The preview URL used to point at the authenticated /api/media/{id} route,
+    so every thumbnail returned 401 and rendered broken. Both `url` and
+    `preview_url` are now signed public URLs, which a plain GET can fetch.
+    """
     from app.core.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "public_media_base_url", "https://tunnel.example.dev/api/media")
-    monkeypatch.setattr(get_settings(), "preview_media_base_url", "http://localhost:8000/api/media")
+    monkeypatch.setattr(get_settings(), "public_media_base_url", "https://api.example.com/api/media/public")
+    monkeypatch.setattr(get_settings(), "preview_media_base_url", "https://api.example.com/api/media")
 
     body = upload(client, PNG).json()
-    assert body["url"].startswith("https://tunnel.example.dev/")
-    assert body["preview_url"] == f"http://localhost:8000/api/media/{body['asset_id']}"
+    assert body["url"].startswith("https://api.example.com/api/media/public/")
+    assert body["preview_url"] == body["url"]
+    assert "?s=" in body["preview_url"] and "&e=" in body["preview_url"]
+
+    # The real test: fetch it exactly as a browser <img> would.
+    path = body["preview_url"].split("?")[0].split("/api/")[1]
+    query = body["preview_url"].split("?", 1)[1]
+    fetched = client.get(f"/api/{path}?{query}")
+    assert fetched.status_code == 200
+    assert fetched.content[:8] == b"\x89PNG\r\n\x1a\n"
 
 
 def test_upload_warns_nothing_when_public_url_configured(

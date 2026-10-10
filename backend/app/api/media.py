@@ -115,7 +115,14 @@ async def upload_media(
     return MediaUploadResponse(
         asset_id=stored.asset_id,
         url=signed_public_url,
-        preview_url=f"{preview_base}/{stored.asset_id}",
+        # Same signed URL as `url`, and deliberately so.
+        #
+        # A preview is rendered by an <img> tag, which cannot send the
+        # X-API-Key header. Pointing preview_url at the authenticated
+        # /api/media/{id} route therefore always returned 401 and showed a
+        # broken image. The signed public URL is fetched by plain GET, which is
+        # exactly what a browser and Buffer both do.
+        preview_url=signed_public_url,
         kind=stored.kind,
         mime=stored.mime,
         size=stored.size,
