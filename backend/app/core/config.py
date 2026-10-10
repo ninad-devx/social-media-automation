@@ -156,6 +156,18 @@ class Settings(BaseSettings):
     # Hard ceiling for a single upload (bytes). Default 25 MiB.
     max_upload_bytes: int = 25 * 1024 * 1024
 
+    # ---- public media URLs (for Buffer) ----------------------------------
+    # Buffer downloads attachments from the public internet with no credential,
+    # so uploaded files must be reachable through an unguessable, signed URL.
+    # app.services.media_signing uses this to tag public media URLs.
+    #
+    # Leave empty to derive it from CREDENTIAL_ENCRYPTION_KEY, which means a
+    # deployment that already has that key needs no extra configuration.
+    media_public_signing_key: str | None = None
+    # How long a generated public media URL stays valid. Long, because a post
+    # scheduled today may not be fetched by Buffer for a long time.
+    media_public_url_ttl_days: int = 365
+
     # ---- object storage (recommended for publishing media) ---------------
     # "local" serves files from this machine and depends on a tunnel for
     # Buffer to reach them. "s3" writes to any S3-compatible bucket, which

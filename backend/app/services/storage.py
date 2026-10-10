@@ -22,8 +22,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from app.core.config import Settings
+from app.core.config import Settings, get_settings
 from app.core.logging import get_logger
+from app.services import media_signing
+
+# Resolved once so signed URLs are deterministic within a process.
+_settings = get_settings()
 
 logger = get_logger("app.media")
 
@@ -120,6 +124,14 @@ class LocalDiskStorage(MediaStorage):
         if self._base_url:
             return f"{self._base_url}/{asset_id}"
         return asset_id
+
+    def signed_public_url(self, asset_id: str) -> str:
+        """Public URL with an HMAC tag so Buffer can fetch it unauthenticated.
+
+        The asset id is already 128 random bits, so this is defence in depth:
+        knowing an id from elsewhere is not enough to download the file.
+        """
+        return f"{self.public_url(asset_id)}{media_signing.sign(asset_id, _settings)}"
 
     # -- interface --------------------------------------------------------- #
     def save(self, stream: BinaryIO, kind: MediaKind, original_name: str, size: int) -> StoredMedia:

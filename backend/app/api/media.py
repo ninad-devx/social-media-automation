@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, File, Query, UploadFile
+from fastapi import APIRouter, File, Query, Request, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 
@@ -16,6 +16,7 @@ from app.api.deps import ApiKeyDep, DbDep, SettingsDep
 from app.core.logging import get_logger
 from app.models.entities import MediaAsset
 from app.schemas.media import MediaAssetOut, MediaUploadResponse
+from app.services import media_signing
 from app.services.errors import AppError, ErrorCode
 from app.services.storage import MediaTooLarge, build_storage, sniff
 
@@ -83,6 +84,8 @@ async def upload_media(
 
     publicly_reachable = storage.has_public_base
     preview_base = settings.preview_media_base_url.rstrip("/")
+    # Buffer fetches this unauthenticated, so it carries an HMAC tag.
+    signed_public_url = storage.signed_public_url(stored.asset_id)
 
     db.add(
         MediaAsset(
@@ -91,7 +94,7 @@ async def upload_media(
             kind=stored.kind,
             mime=stored.mime,
             size=stored.size,
-            url=stored.public_url,
+            url=signed_public_url,
             public=publicly_reachable,
         )
     )
@@ -111,7 +114,7 @@ async def upload_media(
 
     return MediaUploadResponse(
         asset_id=stored.asset_id,
-        url=stored.public_url,
+        url=signed_public_url,
         preview_url=f"{preview_base}/{stored.asset_id}",
         kind=stored.kind,
         mime=stored.mime,
@@ -147,6 +150,54 @@ def get_media(asset_id: str, settings: SettingsDep) -> FileResponse:
         raise AppError(ErrorCode.NOT_FOUND, 404)
 
     # FileResponse takes a path (its first positional arg), not a file object.
+    return FileResponse(
+        path=path,
+        media_type=storage.kind_for(path).mime,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": "inline",
+            "Cache-Control": "public, max-age=31536000, immutable",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+        },
+    )
+
+
+@router.get("/media/public/{asset_id}")
+def get_media_public(
+    asset_id: str,
+    request: Request,
+    settings: SettingsDep,
+    s: Annotated[str | None, Query(description="HMAC tag on the asset id")] = None,
+    e: Annotated[int | None, Query(description="Expiry, unix seconds")] = None,
+) -> FileResponse:
+    """Serve an uploaded file to Buffer, with no credential.
+
+    Deliberately NOT behind `ApiKeyDep`: Buffer is a third party that cannot
+    send our API key, and its download failure is silent - the post is simply
+    created with no picture.
+
+    Access control is the signed tag instead:
+      * the asset id is 128 bits of `secrets.token_hex`, so it cannot be
+        enumerated;
+      * `s` is an HMAC-SHA256 over `asset_id:expiry` keyed by a server secret
+        derived from CREDENTIAL_ENCRYPTION_KEY, verified in constant time;
+      * `e` bounds how long the URL stays usable.
+
+    Knowing an asset id is therefore not sufficient to download the bytes, and a
+    URL captured from a post cannot be replayed indefinitely.
+    """
+    if not media_signing.has_signing_key(settings):
+        raise AppError(ErrorCode.NOT_FOUND, 404)
+
+    if not media_signing.verify(asset_id, s, e, settings):
+        logger.warning("media.public_denied", extra={"context": {"asset_id": asset_id}})
+        raise AppError(ErrorCode.NOT_FOUND, 404)
+
+    storage = build_storage(settings)
+    path = storage.resolve(asset_id)
+    if path is None:
+        raise AppError(ErrorCode.NOT_FOUND, 404)
+
     return FileResponse(
         path=path,
         media_type=storage.kind_for(path).mime,
