@@ -23,12 +23,20 @@ export const authApi = {
   /**
    * Exchange credentials for the HttpOnly session cookie.
    *
-   * Returns the error message rather than throwing so the login form can
-   * render it inline without a try/catch at every call site.
+   * Returns the signed-in operator on success, or an error message on failure,
+   * so the caller never has to guess.
+   *
+   * Deliberately does NOT re-probe /auth/session afterwards. That second round
+   * trip could fail for reasons unrelated to the login itself (the cookie not
+   * yet visible to the browser, a transient network error) and would leave the
+   * operator looking at the login screen again with no explanation. The login
+   * response already carries the identity, so trust it.
    */
-  login: async (username: string, password: string): Promise<{ ok: boolean; message?: string }> => {
+  login: async (
+    username: string,
+    password: string,
+  ): Promise<{ ok: boolean; user?: SessionUser; message?: string }> => {
     try {
-      // Form-encoded: the backend reads it with FastAPI's Form(...) dependency.
       const body = new URLSearchParams({ username, password });
       const response = await fetch(`${API_BASE_ORIGIN}/api/auth/login`, {
         method: "POST",
@@ -36,18 +44,39 @@ export const authApi = {
         credentials: "include",
         body,
       });
-      if (response.ok) return { ok: true };
 
-      let message = "We couldn't sign you in. Please try again.";
+      const text = await response.text();
+      let payload: {
+        username?: string;
+        display_name?: string | null;
+        error?: { message?: string };
+      } | null = null;
       try {
-        const payload = (await response.json()) as { error?: { message?: string } };
-        if (payload?.error?.message) message = payload.error.message;
+        payload = text ? JSON.parse(text) : null;
       } catch {
-        /* keep the generic message */
+        payload = null;
       }
-      return { ok: false, message };
+
+      if (response.ok) {
+        return {
+          ok: true,
+          user: {
+            username: payload?.username || username,
+            display_name: payload?.display_name ?? null,
+            authenticated: true,
+          },
+        };
+      }
+
+      return {
+        ok: false,
+        message: payload?.error?.message ?? "We couldn't sign you in. Please try again.",
+      };
     } catch {
-      return { ok: false, message: "We couldn't reach the server. Check your connection and try again." };
+      return {
+        ok: false,
+        message: "We couldn't reach the server. Check your connection and try again.",
+      };
     }
   },
 

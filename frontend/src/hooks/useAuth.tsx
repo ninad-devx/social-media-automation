@@ -56,12 +56,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = useCallback(async (username: string, password: string) => {
     const result = await authApi.login(username, password);
-    if (result.ok) {
-      const session = await authApi.session();
-      setUser(session.authenticated ? session : null);
+    if (result.ok && result.user) {
+      // Trust the login response. Re-probing /auth/session here used to be the
+      // single point of failure: if that call failed for any reason the user
+      // was dropped straight back to the login screen with no explanation,
+      // even though the session cookie had been set correctly.
+      setUser(result.user);
       setEnabled(true);
     }
-    return result;
+    return { ok: result.ok, message: result.message };
   }, []);
 
   const signOut = useCallback(async () => {
