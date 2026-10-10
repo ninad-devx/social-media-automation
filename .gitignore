@@ -1,0 +1,83 @@
+# ==========================================================================
+# Never commit secrets.
+# Anything below is a credential, a key file, or a local-only artefact.
+# ==========================================================================
+.env
+.env.local
+.env.*.local
+.env.production
+.env.*.production
+.envrc
+.direnv/
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+secrets.*
+credentials.json
+service-account*.json
+
+# n8n local instance data: workflow definitions, the credential vault and
+# encryption keys. Never commit this - it IS the secret store.
+n8n-data/
+n8n_data/
+.n8n/
+
+# Untouched copy of the original 22-node workflow, kept locally because it
+# still contains real Buffer organization and channel ids. The committed
+# social-media-automation.workflow.json has those replaced with placeholders.
+social-media-automation.workflow.local.json
+
+# ==========================================================================
+# Build output
+# ==========================================================================
+node_modules/
+/dist/
+/build/
+/frontend/dist/
+/frontend/build/
+.vite/
+/.build/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+.nyc_output/
+*.egg-info/
+
+# ==========================================================================
+# Local data. The SQLite database and uploaded media are personal content and
+# can be large; they are backed up separately, never committed.
+# ==========================================================================
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+social_media.db
+/media/
+/backend/media/
+
+# Stray copies of files that may carry credentials.
+*.bak
+*.orig
+*.rej
+*~
+
+.DS_Store
+Thumbs.db
+
+*.log
+npm-debug.log*
+
+.vscode/
+.idea/

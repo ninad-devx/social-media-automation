@@ -1,0 +1,184 @@
+# ==========================================================================
+# Production-oriented stack.
+#
+#   docker compose -f deploy/docker-compose.prod.yml --env-file deploy/.env.production up -d
+#
+# This is PREPARED, not applied. Nothing here runs unless you execute it, and
+# it never touches your local SQLite database or your local n8n instance.
+#
+# Services are separate containers on purpose:
+#   frontend  static build behind nginx
+#   backend   FastAPI
+#   n8n       workflow runtime + its own Postgres
+#   proxy     TLS termination and the only public entry point
+#
+# Only the proxy publishes ports. The database, the backend and n8n's admin
+# UI stay on the internal network.
+# ==========================================================================
+
+x-backend-env: &backend-env
+  APP_ENV: production
+  DEBUG: "false"
+  DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env.production}
+  CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:?required - without it no secret can be stored}
+  # Secrets must come from the host environment or a secret manager, never from
+  # a file baked into the image.
+  API_KEY: ${API_KEY:?required before exposing the API}
+  INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:?required - must match n8n's SMA_INTERNAL_SECRET}
+  PUBLISH_ENGINE: ${PUBLISH_ENGINE:-n8n}
+  N8N_PUBLISH_WEBHOOK_URL: ${N8N_PUBLISH_WEBHOOK_URL:?required}
+  N8N_BACKEND_BASE_URL: ${N8N_BACKEND_BASE_URL:?required - must be reachable FROM n8n}
+  N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:-}
+  CORS_ORIGINS: ${CORS_ORIGINS:?required - your public frontend origin}
+  DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Dhaka}
+  PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:?required}
+  PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
+  PREVIEW_MEDIA_BASE_URL: ${PREVIEW_MEDIA_BASE_URL:?required}
+  MEDIA_STORAGE_BACKEND: ${MEDIA_STORAGE_BACKEND:-s3}
+  S3_BUCKET: ${S3_BUCKET:-}
+  S3_ENDPOINT: ${S3_ENDPOINT:-}
+  S3_REGION: ${S3_REGION:-auto}
+  S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID:-}
+  S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY:-}
+  S3_PUBLIC_BASE_URL: ${S3_PUBLIC_BASE_URL:-}
+  MEDIA_STORAGE_DIR: /data/media
+
+services:
+  # ------------------------------------------------------------------ db
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${POSTGRES_DB:-social}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sma} -d ${POSTGRES_DB:-social}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # No ports published: reachable only from the internal network.
+
+  # --------------------------------------------------------------- n8n db
+  n8n_db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${N8N_POSTGRES_USER:-n8n}
+      POSTGRES_PASSWORD: ${N8N_POSTGRES_PASSWORD:?required}
+      POSTGRES_DB: ${N8N_POSTGRES_DB:-n8n}
+    volumes:
+      - n8n_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${N8N_POSTGRES_USER:-n8n} -d ${N8N_POSTGRES_DB:-n8n}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------------------------ api
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    volumes:
+      # Uploads survive a container replacement.
+      - media_data:/data/media
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=5).status==200 else 1)\""]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    expose:
+      - "8000"
+
+  # ------------------------------------------------------------------ n8n
+  n8n:
+    image: n8nio/n8n:latest
+    restart: unless-stopped
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: n8n_db
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${N8N_POSTGRES_DB:-n8n}
+      DB_POSTGRESDB_USER: ${N8N_POSTGRES_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${N8N_POSTGRES_PASSWORD:?required}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?required - n8n refuses to start without it}
+
+      # Read by deploy/n8n/social-publishing-workflow.json. Set ONCE here.
+      # This is the entire per-deployment configuration the workflow needs.
+      SMA_BACKEND_URL: ${N8N_BACKEND_BASE_URL:?required}
+      SMA_INTERNAL_SECRET: ${INTERNAL_SERVICE_SECRET:?required}
+
+      # Reverse-proxy prefix so n8n generates correct public webhook URLs.
+      N8N_HOST: ${N8N_HOST:?required - your public n8n host}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: ${N8N_PUBLIC_URL:?required}
+      N8N_EDITOR_BASE_URL: ${N8N_PUBLIC_URL:?required}
+      GENERIC_TIMEZONE: ${DEFAULT_TIMEZONE:-UTC}
+      TZ: ${DEFAULT_TIMEZONE:-UTC}
+      N8N_SECURE_COOKIE: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true"
+    volumes:
+      # Workflow definitions and credentials persist independently of the container.
+      - n8n_data:/home/node/.n8n
+    depends_on:
+      n8n_db:
+        condition: service_healthy
+    expose:
+      - "5678"
+    # No ports published: the admin UI is reached through the proxy only.
+
+  # ------------------------------------------------------------------ web
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_API_BASE_URL:?required}
+        VITE_DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Dhaka}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    expose:
+      - "80"
+
+  # ---------------------------------------------------------------- proxy
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      SITE_ADDRESS: ${PUBLIC_SITE_ADDRESS:?required - e.g. your-domain.com}
+      API_ADDRESS: ${PUBLIC_API_HOST:?required - e.g. api.your-domain.com}
+      N8N_ADDRESS: ${N8N_HOST:?required - e.g. n8n.your-domain.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Caddy stores ACME certificates here so renewals survive a restart.
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - backend
+      - frontend
+      - n8n
+
+volumes:
+  db_data:
+  n8n_db_data:
+  media_data:
+  n8n_data:
+  caddy_data:
+  caddy_config:

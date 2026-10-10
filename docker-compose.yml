@@ -1,0 +1,101 @@
+# ==========================================================================
+# Local development stack
+#
+#   docker compose up -d api web     # SQLite, no database container needed
+#
+# PostgreSQL is OPTIONAL. Only start it if you change DATABASE_URL:
+#   docker compose --profile postgres up -d
+#
+# n8n is intentionally NOT defined here: it already runs in your own
+# container and holds the Buffer credentials. This stack only talks to it.
+# ==========================================================================
+
+services:
+  # ------------------------------------------------------------------ api
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sma-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: development
+      DEBUG: "true"
+      # Default: SQLite inside the container. No database service required.
+      DATABASE_URL: ${DATABASE_URL:-sqlite:////data/social_media.db}
+      # Encrypts stored Buffer tokens and AI provider keys.
+      # Falls back to AI_ENCRYPTION_KEY when unset.
+      CREDENTIAL_ENCRYPTION_KEY: ${CREDENTIAL_ENCRYPTION_KEY:-}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-}
+      # "n8n" keeps the original behaviour (default).
+      # "direct" makes the backend call Buffer itself.
+      PUBLISH_ENGINE: ${PUBLISH_ENGINE:-n8n}
+      N8N_PUBLISH_WEBHOOK_URL: ${N8N_PUBLISH_WEBHOOK_URL:-http://host.docker.internal:5678/webhook/social/publish}
+      N8N_WEBHOOK_SECRET: ${N8N_WEBHOOK_SECRET:-}
+      N8N_TIMEOUT_SECONDS: ${N8N_TIMEOUT_SECONDS:-60}
+      # Address the BACKEND uses when calling n8n. host.docker.internal because
+      # this container is reaching out to a service on your PC.
+      N8N_BACKEND_BASE_URL: ${N8N_BACKEND_BASE_URL:-http://host.docker.internal:8000}
+      # Shared secret for the workflow's callback to /internal/publish.
+      # Leave empty and that endpoint returns 404.
+      INTERNAL_SERVICE_SECRET: ${INTERNAL_SERVICE_SECRET:-}
+      DEFAULT_TIMEZONE: ${DEFAULT_TIMEZONE:-Asia/Dhaka}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Buffer downloads media from the public internet. Point this at a public
+      # address (tunnel or object storage) or uploads cannot be published.
+      PUBLIC_MEDIA_BASE_URL: ${PUBLIC_MEDIA_BASE_URL:-}
+      # Thumbnails the browser loads. Always the local API.
+      PREVIEW_MEDIA_BASE_URL: ${PREVIEW_MEDIA_BASE_URL:-http://localhost:8000/api/media}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:8000}
+      MEDIA_STORAGE_BACKEND: ${MEDIA_STORAGE_BACKEND:-local}
+    volumes:
+      - sma_data:/data
+      - sma_media:/app/media
+    extra_hosts:
+      # Lets the container reach n8n running on the host.
+      - "host.docker.internal:host-gateway"
+
+  # ------------------------------------------------------------------ web
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:8000}
+        VITE_DEFAULT_TIMEZONE: ${VITE_DEFAULT_TIMEZONE:-Asia/Dhaka}
+    container_name: sma-web
+    restart: unless-stopped
+    ports:
+      # Host 3000 -> container 80. The runtime stage is nginx (frontend/nginx.conf
+      # has `listen 80;`), so the container port is 80, not 3000.
+      - "3000:80"
+    depends_on:
+      - api
+
+  # ------------------------------------------------- postgres (OPTIONAL)
+  # Only used when DATABASE_URL is switched to postgresql+psycopg://...
+  postgres:
+    image: postgres:16-alpine
+    container_name: sma-postgres
+    restart: unless-stopped
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: sma
+      POSTGRES_PASSWORD: sma
+      POSTGRES_DB: social
+    ports:
+      - "5432:5432"
+    volumes:
+      - sma_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sma -d social"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  sma_data:
+  sma_media:
+  sma_pgdata:

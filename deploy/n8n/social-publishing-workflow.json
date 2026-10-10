@@ -1,0 +1,275 @@
+{
+  "name": "SMA - Generic Social Publishing",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "social/publish",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "sma-webhook",
+      "name": "01 - Webhook - Publish Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -360,
+        0
+      ],
+      "webhookId": "sma-social-publish"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ULID: sortable, collision-resistant, no dependencies.\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ===========================================================================\n// Validates the request contract ONLY.\n//\n// This node intentionally knows nothing about accounts, channels, brands or\n// providers. It checks that the caller sent well-formed internal ids and that\n// the content and schedule are usable. Whether the channel exists, whether it\n// belongs to the account, whether its integration is healthy and which external\n// id to use are ALL decided by the backend, which owns that data.\n// ===========================================================================\nconst MAX_CONTENT = 5000;\n\nreturn $input.all().map((item) => {\n  const header = item.json.headers || {};\n  const body = (item.json.body !== undefined && item.json.body !== null) ? item.json.body : item.json;\n\n  const errors = [];\n  const fail = (code, message) => errors.push({ code, message });\n\n  // A request id may be supplied by the caller (the backend always does) so a\n  // single operation stays traceable from the UI through to the provider.\n  const supplied =\n    (typeof body.request_id === 'string' && body.request_id.trim()) ||\n    (typeof header['x-request-id'] === 'string' && header['x-request-id'].trim()) ||\n    '';\n  const requestId = supplied || makeUlid(Date.now());\n\n  const accountId = typeof body.account_id === 'string' ? body.account_id.trim() : '';\n  const channelId = typeof body.channel_id === 'string' ? body.channel_id.trim() : '';\n  if (!accountId) fail('MISSING_ACCOUNT_ID', 'account_id is required.');\n  if (!channelId) fail('MISSING_CHANNEL_ID', 'channel_id is required.');\n\n  const content = typeof body.content === 'string' ? body.content.trim() : '';\n  if (!content) fail('CONTENT_EMPTY', 'content is required and cannot be empty.');\n  else if (content.length > MAX_CONTENT) fail('INVALID_REQUEST', 'content is too long.');\n\n  const publishMode = (typeof body.publish_mode === 'string' ? body.publish_mode : 'NOW')\n    .trim().toUpperCase();\n  if (publishMode !== 'NOW' && publishMode !== 'SCHEDULE') {\n    fail('INVALID_PUBLISH_MODE', 'publish_mode must be NOW or SCHEDULE.');\n  }\n\n  const timezone = (typeof body.timezone === 'string' && body.timezone.trim()) || 'UTC';\n  const scheduledAt = body.scheduled_at === undefined ? null : body.scheduled_at;\n  if (publishMode === 'SCHEDULE' && !scheduledAt) {\n    fail('INVALID_SCHEDULE', 'scheduled_at is required when publish_mode is SCHEDULE.');\n  }\n\n  const media = Array.isArray(body.media) ? body.media : [];\n  for (let i = 0; i < media.length; i++) {\n    const m = media[i] || {};\n    if (m.type !== 'image' && m.type !== 'video') {\n      fail('MEDIA_INVALID', 'media[' + i + '].type must be image or video.');\n    }\n    if (typeof m.url !== 'string' || !/^https?:\\/\\//.test(m.url)) {\n      fail('MEDIA_INVALID', 'media[' + i + '].url must be an absolute http(s) URL.');\n    }\n  }\n\n  const normalized = {\n    request_id: requestId,\n    account_id: accountId,\n    channel_id: channelId,\n    content,\n    publish_mode: publishMode,\n    scheduled_at: scheduledAt,\n    timezone,\n    media: media.map((m) => ({\n      type: m.type,\n      url: m.url,\n      ...(m.alt_text ? { alt_text: String(m.alt_text).slice(0, 1000) } : {}),\n    })),\n  };\n\n  logEvent({\n    event: 'request_validated',\n    request_id: requestId,\n    valid: errors.length === 0,\n    error_count: errors.length,\n    media_count: media.length,\n  });\n\n  return {\n    json: {\n      request_id: requestId,\n      payload: normalized,\n      valid: errors.length === 0,\n      errors,\n    },\n  };\n});"
+      },
+      "id": "02---validate-request-contract",
+      "name": "02 - Validate Request Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -140,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "is-valid",
+              "leftValue": "={{ $json.valid }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "sma-gate",
+      "name": "03 - Route - Valid Request",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        60,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ULID: sortable, collision-resistant, no dependencies.\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// Shaped exactly like a successful response so the caller never has to branch\n// on transport details, only on `success`.\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const first = (j.errors && j.errors[0]) || {};\n  logEvent({ event: 'request_rejected', request_id: j.request_id, code: first.code || 'INVALID_REQUEST' });\n  return {\n    json: {\n      success: false,\n      request_id: j.request_id,\n      error: {\n        code: first.code || 'INVALID_REQUEST',\n        message: first.message || 'The request was rejected.',\n      },\n    },\n  };\n});"
+      },
+      "id": "04---build-validation-error-response",
+      "name": "04 - Build Validation Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        60,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ ($env.SMA_BACKEND_URL || 'http://localhost:8000').replace(/\\/$/, '') + '/internal/publish' }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Internal-Secret",
+              "value": "={{ $env.SMA_INTERNAL_SECRET }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-Request-Id",
+              "value": "={{ $json.payload.request_id }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.payload) }}",
+        "options": {
+          "timeout": 60000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "sma-backend-call",
+      "name": "05 - Call Backend Publishing Service",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        280,
+        0
+      ],
+      "onError": "continueRegularOutput",
+      "retryOnFail": false,
+      "notes": "Resolves the integration credential and the external channel id. Retries are deliberately OFF: publishing is not idempotent, so a blind retry can publish twice."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "// ULID: sortable, collision-resistant, no dependencies.\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ===========================================================================\n// Turns whatever the backend returned into the application's response shape.\n//\n// The backend owns the outcome: this node only relays it. A non-2xx HTTP status\n// is turned into the same envelope rather than a raw provider error, and the\n// response body is never logged verbatim because it can contain internal ids.\n// ===========================================================================\n  const SUCCESS_STATUSES = ['published', 'scheduled'];\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const httpStatus = typeof j.statusCode === 'number' ? j.statusCode : 0;\n  let body = j.body;\n\n  if (typeof body === 'string') {\n    try { body = JSON.parse(body); } catch (e) { body = null; }\n  }\n  if (!body || typeof body !== 'object') {\n    body = null;\n  }\n\n  // Prefer the backend's id, then the header this workflow sent (which the\n  // backend echoes), so a failure is traceable even when the body is not ours.\n  const requestId =\n    (body && body.request_id) ||\n    ((j.headers || {})['x-request-id']) ||\n    j.request_id ||\n    '';\n\n\n  if (body && body.success === true) {\n    logEvent({\n      event: 'publish_success',\n      request_id: requestId,\n      status: body.status,\n      account_id: body.account_id,\n      channel_id: body.channel_id,\n    });\n    return {\n      json: {\n        success: true,\n        request_id: requestId,\n        status: SUCCESS_STATUSES.indexOf(body.status) >= 0 ? body.status : 'published',\n        account_id: body.account_id || null,\n        account_name: body.account_name || null,\n        channel_id: body.channel_id || null,\n        channel_name: body.channel_name || null,\n        platform: body.platform || null,\n        buffer_publication_id: body.buffer_publication_id || null,\n        external_link: body.external_link || null,\n        scheduled_at: body.scheduled_at || null,\n        timezone: body.timezone || null,\n        content_length: typeof body.content_length === 'number' ? body.content_length : null,\n        media_count: typeof body.media_count === 'number' ? body.media_count : 0,\n      },\n    };\n  }\n\n  // Failure. Prefer the backend's own code/message; fall back to the status.\n  let code = 'PUBLISHING_FAILED';\n  let message = 'The publishing service could not complete this request.';\n  if (body && body.error && typeof body.error === 'object') {\n    code = body.error.code || code;\n    message = body.error.message || message;\n  } else if (httpStatus === 0) {\n    code = 'BUFFER_NETWORK_ERROR';\n    message = 'The backend could not be reached from n8n. Check SMA_BACKEND_URL.';\n  } else if (httpStatus === 401 || httpStatus === 403) {\n    code = 'INTERNAL_SERVICE_UNAUTHORIZED';\n    message = 'n8n was rejected by the backend. Check SMA_INTERNAL_SECRET matches INTERNAL_SERVICE_SECRET.';\n  } else if (httpStatus === 429) {\n    code = 'BUFFER_RATE_LIMIT';\n  } else if (httpStatus >= 500) {\n    code = 'BUFFER_SERVER_ERROR';\n  }\n\n  logEvent({\n    event: 'publish_failure',\n    request_id: requestId,\n    code,\n    http_status: httpStatus,\n  });\n\n  return {\n    json: {\n      success: false,\n      request_id: requestId,\n      error: { code, message },\n    },\n  };\n});"
+      },
+      "id": "06---normalize-response",
+      "name": "06 - Normalize Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "sma-respond-ok",
+      "name": "07 - Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "id": "sma-respond-err",
+      "name": "08 - Respond - Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        200
+      ]
+    }
+  ],
+  "connections": {
+    "01 - Webhook - Publish Request": {
+      "main": [
+        [
+          {
+            "node": "02 - Validate Request Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02 - Validate Request Contract": {
+      "main": [
+        [
+          {
+            "node": "03 - Route - Valid Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "03 - Route - Valid Request": {
+      "main": [
+        [
+          {
+            "node": "05 - Call Backend Publishing Service",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "04 - Build Validation Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "04 - Build Validation Error Response": {
+      "main": [
+        [
+          {
+            "node": "08 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "05 - Call Backend Publishing Service": {
+      "main": [
+        [
+          {
+            "node": "06 - Normalize Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "06 - Normalize Response": {
+      "main": [
+        [
+          {
+            "node": "07 - Respond - Success",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "08 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "pinData": {},
+  "meta": {
+    "instanceId": "sma-portable-workflow"
+  },
+  "tags": []
+}

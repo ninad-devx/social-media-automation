@@ -1,0 +1,151 @@
+/* ==========================================================================
+   Design tokens
+   A single restrained scale for colour, space, radius, shadow and type.
+   Light and dark are both first-class.
+   ========================================================================== */
+
+:root {
+  /* ---- neutral ramp (cool grey) ---- */
+  --c-bg: #fbfbfd;
+  --c-surface: #ffffff;
+  --c-surface-2: #f7f8fa;
+  --c-surface-3: #f1f3f6;
+  --c-overlay: rgba(16, 20, 28, 0.44);
+
+  --c-border: #e6e8ec;
+  --c-border-strong: #d5d9e0;
+
+  --c-text: #14181f;
+  --c-text-secondary: #59616e;
+  --c-text-muted: #878e9b;
+  --c-text-inverse: #ffffff;
+
+  /* ---- accent: a single calm indigo ---- */
+  --c-accent: #4f46e5;
+  --c-accent-hover: #4338ca;
+  --c-accent-active: #3730a3;
+  --c-accent-soft: #eef2ff;
+  --c-accent-soft-hover: #e0e7ff;
+  --c-accent-border: #c7d2fe;
+  --c-accent-text: #3730a3;
+
+  /* ---- semantic ---- */
+  --c-success: #047857;
+  --c-success-soft: #ecfdf5;
+  --c-success-border: #a7f3d0;
+  --c-success-text: #065f46;
+
+  --c-danger: #dc2626;
+  --c-danger-hover: #b91c1c;
+  --c-danger-soft: #fef2f2;
+  --c-danger-border: #fecaca;
+  --c-danger-text: #991b1b;
+
+  --c-warning: #b45309;
+  --c-warning-soft: #fffbeb;
+  --c-warning-border: #fde68a;
+
+  --c-info: #0369a1;
+  --c-info-soft: #f0f9ff;
+  --c-info-border: #bae6fd;
+
+  /* ---- spacing (4px base) ---- */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.25rem;
+  --s-6: 1.5rem;
+  --s-8: 2rem;
+  --s-10: 2.5rem;
+  --s-12: 3rem;
+  --s-16: 4rem;
+
+  /* ---- radius ---- */
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 12px;
+  --r-xl: 16px;
+  --r-2xl: 20px;
+  --r-full: 999px;
+
+  /* ---- elevation: subtle, layered ---- */
+  --sh-xs: 0 1px 2px rgba(16, 20, 28, 0.04);
+  --sh-sm: 0 1px 3px rgba(16, 20, 28, 0.06), 0 1px 2px rgba(16, 20, 28, 0.04);
+  --sh-md: 0 4px 12px rgba(16, 20, 28, 0.07), 0 1px 3px rgba(16, 20, 28, 0.05);
+  --sh-lg: 0 12px 32px rgba(16, 20, 28, 0.1), 0 4px 8px rgba(16, 20, 28, 0.04);
+  --sh-focus: 0 0 0 3px rgba(79, 70, 229, 0.14);
+
+  /* ---- type ---- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  --t-xs: 0.75rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.875rem;
+  --t-md: 0.9375rem;
+  --t-lg: 1.0625rem;
+  --t-xl: 1.25rem;
+  --t-2xl: 1.5rem;
+  --t-3xl: 1.875rem;
+
+  /* ---- layout ---- */
+  --sidebar-w: 248px;
+  --topbar-h: 60px;
+  --content-max: 1180px;
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --c-bg: #0e1116;
+    --c-surface: #161a21;
+    --c-surface-2: #1c212a;
+    --c-surface-3: #232935;
+    --c-overlay: rgba(0, 0, 0, 0.62);
+
+    --c-border: #262c37;
+    --c-border-strong: #363d4a;
+
+    --c-text: #eef1f6;
+    --c-text-secondary: #a3abba;
+    --c-text-muted: #737c8b;
+    --c-text-inverse: #0e1116;
+
+    --c-accent: #818cf8;
+    --c-accent-hover: #a5b4fc;
+    --c-accent-active: #6366f1;
+    --c-accent-soft: #1e213a;
+    --c-accent-soft-hover: #262a48;
+    --c-accent-border: #3b3f6b;
+    --c-accent-text: #c7d2fe;
+
+    --c-success: #34d399;
+    --c-success-soft: #10241c;
+    --c-success-border: #1e4d3a;
+    --c-success-text: #6ee7b7;
+
+    --c-danger: #f87171;
+    --c-danger-hover: #fca5a5;
+    --c-danger-soft: #2a1414;
+    --c-danger-border: #5c2626;
+    --c-danger-text: #fca5a5;
+
+    --c-warning: #fbbf24;
+    --c-warning-soft: #2a2010;
+    --c-warning-border: #5a4415;
+
+    --c-info: #38bdf8;
+    --c-info-soft: #0d2231;
+    --c-info-border: #1d4763;
+
+    --sh-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+    --sh-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+    --sh-md: 0 4px 12px rgba(0, 0, 0, 0.45), 0 1px 3px rgba(0, 0, 0, 0.3);
+    --sh-lg: 0 12px 32px rgba(0, 0, 0, 0.55), 0 4px 8px rgba(0, 0, 0, 0.3);
+    --sh-focus: 0 0 0 3px rgba(129, 140, 248, 0.25);
+  }
+}

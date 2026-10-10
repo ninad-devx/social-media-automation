@@ -1,0 +1,55 @@
+# ==========================================================================
+# Keeps secrets and local data OUT of the image.
+#
+# backend/Dockerfile ends with `COPY . .`, so without this file every one of
+# these would be baked into a layer that anyone with the image can extract:
+#   - .env                -> live CREDENTIAL_ENCRYPTION_KEY / AI_ENCRYPTION_KEY
+#   - social_media.db     -> encrypted credentials and all your content
+#   - .venv/              -> hundreds of MB of local dependencies
+#   - media/              -> every uploaded file
+#
+# Excluded files are still fully present in your local checkout and in git.
+# ==========================================================================
+
+# ---- secrets ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials.json
+service-account*.json
+
+# ---- local data ------------------------------------------------------------
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+media/
+
+# ---- virtualenvs and caches ------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# ---- not needed at runtime -------------------------------------------------
+tests/
+pytest.ini
+*.md
+
+# ---- tooling ---------------------------------------------------------------
+.dockerignore
+.git/
+.gitignore

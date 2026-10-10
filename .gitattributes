@@ -1,0 +1,24 @@
+# Normalise line endings in the repository.
+#
+# Contributors are on Windows, but every image builds and every service runs on
+# Linux. Without this, a CRLF checkout can produce a Dockerfile or script that
+# behaves differently in CI than it does locally.
+* text=auto eol=lf
+
+# Keep LF explicitly for anything executed inside a container.
+Dockerfile text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# n8n and the app both parse these as strict JSON; a stray CR is noise.
+*.json text eol=lf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary

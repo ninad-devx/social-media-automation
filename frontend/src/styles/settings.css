@@ -1,0 +1,304 @@
+/* ==========================================================================
+   Settings: tabs, status overview, integrations, channel management
+
+   All colours come from the tokens in tokens.css, so light and dark themes
+   both work without a second set of rules here.
+   ========================================================================== */
+
+/* --- tab strip ---------------------------------------------------------- */
+.tabs {
+  display: flex;
+  gap: var(--s-1);
+  border-bottom: 1px solid var(--c-border);
+  margin-bottom: var(--s-6);
+  overflow-x: auto;
+}
+
+.tab {
+  padding: var(--s-3) var(--s-4);
+  font-size: var(--t-base);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+  transition: color var(--ease), border-color var(--ease);
+}
+
+.tab:hover {
+  color: var(--c-text);
+}
+
+.tab--active {
+  color: var(--c-accent);
+  border-bottom-color: var(--c-accent);
+}
+
+/* --- layout helpers ----------------------------------------------------- */
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-4);
+}
+
+.cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  align-items: flex-start;
+}
+
+.cell-actions {
+  display: flex;
+  gap: var(--s-2);
+  justify-content: flex-end;
+}
+
+/* --- banner ------------------------------------------------------------- */
+.banner {
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  font-size: var(--t-base);
+  border: 1px solid transparent;
+}
+
+.banner--success {
+  background: var(--c-success-soft);
+  border-color: var(--c-success-border);
+  color: var(--c-success-text);
+}
+
+.banner--danger {
+  background: var(--c-danger-soft);
+  border-color: var(--c-danger-border);
+  color: var(--c-danger-text);
+  margin-top: var(--s-3);
+}
+
+/* --- stat tiles --------------------------------------------------------- */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s-3);
+}
+
+.stat-tile {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding: var(--s-4);
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+}
+
+.stat-tile__label {
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--c-text-muted);
+  font-weight: 600;
+}
+
+.stat-tile__value {
+  font-size: var(--t-xl);
+  font-weight: 650;
+  color: var(--c-text);
+  line-height: 1.2;
+}
+
+.stat-tile__hint {
+  font-size: var(--t-xs);
+  color: var(--c-text-muted);
+}
+
+/* --- issue list --------------------------------------------------------- */
+.issue-list {
+  list-style: none;
+  padding: 0;
+  margin: var(--s-4) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.issue {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3) var(--s-4);
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-surface-2);
+}
+
+.issue--error {
+  border-color: var(--c-danger-border);
+  background: var(--c-danger-soft);
+}
+
+.issue--warning {
+  border-color: var(--c-warning-border);
+  background: var(--c-warning-soft);
+}
+
+.issue__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.issue__body strong {
+  font-size: var(--t-base);
+  font-weight: 600;
+}
+
+.issue__body span {
+  font-size: var(--t-sm);
+  color: var(--c-text-secondary);
+}
+
+/* --- inline form -------------------------------------------------------- */
+.inline-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  align-items: center;
+  margin-top: var(--s-4);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--c-border);
+}
+
+.inline-form .input {
+  flex: 1 1 260px;
+}
+
+/* --- discovery / channel picker ----------------------------------------- */
+.discovery {
+  margin-top: var(--s-5);
+  padding-top: var(--s-5);
+  border-top: 1px solid var(--c-border);
+}
+
+.discovery__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.discovery__actions {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.channel-picker {
+  list-style: none;
+  padding: 0;
+  margin: var(--s-4) 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.channel-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+  background: var(--c-surface-2);
+}
+
+.channel-option__label {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  cursor: pointer;
+}
+
+.channel-option__name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.channel-option__name small {
+  color: var(--c-text-muted);
+  font-size: var(--t-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.channel-option__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+  justify-content: flex-end;
+}
+
+/* --- data table --------------------------------------------------------- */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--s-4);
+  font-size: var(--t-base);
+}
+
+.data-table th {
+  text-align: left;
+  font-size: var(--t-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--c-text-muted);
+  font-weight: 600;
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--c-border);
+}
+
+.data-table td {
+  padding: var(--s-3);
+  border-bottom: 1px solid var(--c-border);
+  vertical-align: middle;
+}
+
+.data-table tr:last-child td {
+  border-bottom: none;
+}
+
+.small {
+  font-size: var(--t-xs);
+}
+
+/* --- responsive --------------------------------------------------------- */
+@media (max-width: 720px) {
+  .channel-option {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .channel-option__meta {
+    justify-content: flex-start;
+  }
+
+  .data-table {
+    display: block;
+    overflow-x: auto;
+  }
+}

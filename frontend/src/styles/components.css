@@ -1,0 +1,575 @@
+/* ==========================================================================
+   Platform accents
+   ========================================================================== */
+:root {
+  --platform-instagram: #d6336c;
+  --platform-facebook: #1877f2;
+  --platform-linkedin: #0a66c2;
+  --platform-twitter: #0f1419;
+  --platform-threads: #000000;
+  --platform-mastodon: #6364ff;
+  --platform-youtube: #ff0000;
+  --platform-bluesky: #0285ff;
+  --platform-pinterest: #e60023;
+  --platform-generic: #64748b;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --platform-twitter: #e7e9ea;
+    --platform-threads: #f5f5f5;
+  }
+}
+
+/* ==========================================================================
+   Button
+   ========================================================================== */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  border-radius: var(--r-md);
+  font-weight: 500;
+  font-size: var(--t-base);
+  line-height: 1;
+  white-space: nowrap;
+  border: 1px solid transparent;
+  transition: background-color 140ms var(--ease), border-color 140ms var(--ease),
+    color 140ms var(--ease), box-shadow 140ms var(--ease), transform 80ms var(--ease);
+  user-select: none;
+}
+
+.btn:active:not(:disabled) {
+  transform: translateY(0.5px);
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.btn--sm {
+  height: 30px;
+  padding: 0 var(--s-3);
+  font-size: var(--t-sm);
+}
+
+.btn--md {
+  height: 36px;
+  padding: 0 var(--s-4);
+}
+
+.btn--lg {
+  height: 44px;
+  padding: 0 var(--s-6);
+  font-size: var(--t-md);
+}
+
+.btn--full {
+  width: 100%;
+}
+
+.btn--primary {
+  background: var(--c-accent);
+  color: #fff;
+  box-shadow: var(--sh-xs);
+}
+.btn--primary:hover:not(:disabled) {
+  background: var(--c-accent-hover);
+}
+.btn--primary:active:not(:disabled) {
+  background: var(--c-accent-active);
+}
+
+.btn--secondary {
+  background: var(--c-surface);
+  color: var(--c-text);
+  border-color: var(--c-border-strong);
+  box-shadow: var(--sh-xs);
+}
+.btn--secondary:hover:not(:disabled) {
+  background: var(--c-surface-2);
+  border-color: var(--c-text-muted);
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--c-text-secondary);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: var(--c-surface-3);
+  color: var(--c-text);
+}
+
+.btn--danger {
+  background: var(--c-danger);
+  color: #fff;
+}
+.btn--danger:hover:not(:disabled) {
+  background: var(--c-danger-hover);
+}
+
+.spinner {
+  animation: spin 700ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ==========================================================================
+   Card
+   ========================================================================== */
+.card {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-xs);
+}
+
+.card--padded {
+  padding: var(--s-6);
+}
+
+.card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-4);
+  margin-bottom: var(--s-5);
+}
+
+.card__title {
+  font-size: var(--t-md);
+  font-weight: 600;
+}
+
+.card__description {
+  margin-top: 2px;
+  font-size: var(--t-sm);
+  color: var(--c-text-muted);
+}
+
+.card__header-action {
+  flex-shrink: 0;
+}
+
+/* ==========================================================================
+   Field
+   ========================================================================== */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.field__label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+
+.field__label {
+  font-size: var(--t-sm);
+  font-weight: 550;
+  color: var(--c-text-secondary);
+  letter-spacing: -0.005em;
+}
+
+.field__optional {
+  font-size: var(--t-xs);
+  color: var(--c-text-muted);
+}
+
+.field__hint {
+  font-size: var(--t-xs);
+  color: var(--c-text-muted);
+  line-height: 1.5;
+}
+
+.field__error {
+  font-size: var(--t-xs);
+  color: var(--c-danger-text);
+  font-weight: 500;
+}
+
+.field--error .input,
+.field--error .select__trigger,
+.field--error .editor {
+  border-color: var(--c-danger);
+}
+
+/* ==========================================================================
+   Input / Select / Textarea
+   ========================================================================== */
+.input,
+.select__trigger {
+  width: 100%;
+  height: 38px;
+  padding: 0 var(--s-3);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  font-size: var(--t-base);
+  color: var(--c-text);
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease),
+    background-color 140ms var(--ease);
+}
+
+.input::placeholder {
+  color: var(--c-text-muted);
+}
+
+/* ---- Textarea ----------------------------------------------------------- */
+.textarea {
+  width: 100%;
+  min-height: 76px;
+  padding: var(--s-2) var(--s-3);
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  font-family: inherit;
+  font-size: var(--t-base);
+  line-height: 1.55;
+  resize: vertical;
+  transition: border-color 140ms var(--ease), box-shadow 140ms var(--ease);
+}
+
+.textarea::placeholder {
+  color: var(--c-text-muted);
+}
+
+.textarea:hover:not(:disabled) {
+  border-color: var(--c-text-muted);
+}
+
+.textarea:focus,
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--c-accent);
+  box-shadow: var(--sh-focus);
+}
+
+.textarea:disabled {
+  background: var(--c-surface-2);
+  color: var(--c-text-muted);
+  cursor: not-allowed;
+}
+
+/*
+ * Safety net for form controls added without a class.
+ *
+ * Form controls do NOT inherit `color` from their parent, so an unclassed
+ * <input> or <textarea> falls back to the browser default: a white box. In a
+ * dark theme that renders as white text on white, i.e. invisible while typing.
+ * Styling every bare control means a forgotten class can never hide what the
+ * user typed.
+ */
+input:not([class]):not([type="checkbox"]):not([type="radio"]),
+textarea:not([class]) {
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border-strong);
+  border-radius: var(--r-md);
+  font-family: inherit;
+  font-size: var(--t-base);
+  padding: var(--s-2) var(--s-3);
+}
+
+input:not([class]):not([type="checkbox"]):not([type="radio"]):focus,
+textarea:not([class]):focus {
+  outline: none;
+  border-color: var(--c-accent);
+  box-shadow: var(--sh-focus);
+}
+
+.input:hover:not(:disabled),
+.select__trigger:hover:not(:disabled) {
+  border-color: var(--c-text-muted);
+}
+
+.input:focus,
+.select__trigger:focus,
+.input:focus-visible,
+.select__trigger:focus-visible {
+  outline: none;
+  border-color: var(--c-accent);
+  box-shadow: var(--sh-focus);
+}
+
+.input:disabled,
+.select__trigger:disabled {
+  background: var(--c-surface-2);
+  color: var(--c-text-muted);
+  cursor: not-allowed;
+}
+
+/* ---- Select (custom, accessible) ---- */
+.select {
+  position: relative;
+}
+
+.select__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  text-align: left;
+  cursor: pointer;
+}
+
+.select__trigger[data-placeholder="true"] {
+  color: var(--c-text-muted);
+}
+
+.select__value {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select__chevron {
+  color: var(--c-text-muted);
+  transition: transform 160ms var(--ease);
+}
+
+.select__trigger[aria-expanded="true"] .select__chevron {
+  transform: rotate(180deg);
+}
+
+.select__menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: var(--s-1);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-lg);
+  animation: menu-in 140ms var(--ease-out);
+}
+
+@keyframes menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+}
+
+.select__option {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border-radius: var(--r-sm);
+  font-size: var(--t-base);
+  color: var(--c-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 100ms var(--ease);
+}
+
+.select__option:hover,
+.select__option.is-active {
+  background: var(--c-surface-3);
+}
+
+.select__option[aria-selected="true"] {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+  font-weight: 550;
+}
+
+.select__option-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.select__option-sub {
+  font-size: var(--t-xs);
+  color: var(--c-text-muted);
+  font-weight: 400;
+}
+
+.select__check {
+  color: var(--c-accent);
+}
+
+.select__group-label {
+  padding: var(--s-2) var(--s-3) var(--s-1);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--c-text-muted);
+}
+
+/* ---- Segmented control ---- */
+.segmented {
+  display: inline-flex;
+  padding: 3px;
+  gap: 2px;
+  background: var(--c-surface-2);
+  border: 1px solid var(--c-border);
+  border-radius: var(--r-md);
+}
+
+.segmented__option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-4);
+  border-radius: 6px;
+  font-size: var(--t-sm);
+  font-weight: 500;
+  color: var(--c-text-secondary);
+  transition: background-color 140ms var(--ease), color 140ms var(--ease),
+    box-shadow 140ms var(--ease);
+}
+
+.segmented__option:hover:not(.is-selected) {
+  color: var(--c-text);
+}
+
+.segmented__option.is-selected {
+  background: var(--c-surface);
+  color: var(--c-text);
+  box-shadow: var(--sh-xs);
+}
+
+/* ==========================================================================
+   Platform avatar
+   ========================================================================== */
+.platform-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--pa-size);
+  height: var(--pa-size);
+  flex-shrink: 0;
+  border-radius: var(--r-md);
+  background: color-mix(in srgb, var(--pa-color) 12%, transparent);
+  color: var(--pa-color);
+  font-size: calc(var(--pa-size) * 0.34);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1;
+  border: 1px solid color-mix(in srgb, var(--pa-color) 22%, transparent);
+}
+
+/* ==========================================================================
+   Badge
+   ========================================================================== */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding: 2px var(--s-2);
+  border-radius: var(--r-full);
+  font-size: var(--t-xs);
+  font-weight: 550;
+  line-height: 1.6;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.badge--neutral {
+  background: var(--c-surface-3);
+  color: var(--c-text-secondary);
+  border-color: var(--c-border);
+}
+.badge--success {
+  background: var(--c-success-soft);
+  color: var(--c-success-text);
+  border-color: var(--c-success-border);
+}
+.badge--danger {
+  background: var(--c-danger-soft);
+  color: var(--c-danger-text);
+  border-color: var(--c-danger-border);
+}
+.badge--warning {
+  background: var(--c-warning-soft);
+  color: var(--c-warning);
+  border-color: var(--c-warning-border);
+}
+.badge--info {
+  background: var(--c-info-soft);
+  color: var(--c-info);
+  border-color: var(--c-info-border);
+}
+.badge--accent {
+  background: var(--c-accent-soft);
+  color: var(--c-accent-text);
+  border-color: var(--c-accent-border);
+}
+
+/* ==========================================================================
+   Empty state
+   ========================================================================== */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: var(--s-12) var(--s-6);
+}
+
+.empty__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: var(--s-4);
+  border-radius: var(--r-lg);
+  background: var(--c-surface-3);
+  color: var(--c-text-muted);
+}
+
+.empty__title {
+  font-size: var(--t-md);
+  font-weight: 600;
+}
+
+.empty__description {
+  margin-top: var(--s-2);
+  max-width: 34ch;
+  font-size: var(--t-sm);
+  color: var(--c-text-muted);
+}
+
+.empty__action {
+  margin-top: var(--s-5);
+}
+
+/* ==========================================================================
+   Skeleton
+   ========================================================================== */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--c-surface-3) 25%,
+    var(--c-surface-2) 50%,
+    var(--c-surface-3) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: var(--r-sm);
+}
+
+@keyframes shimmer {
+  to {
+    background-position: -200% 0;
+  }
+}

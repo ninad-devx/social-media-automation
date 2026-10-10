@@ -1,0 +1,773 @@
+{
+  "name": "social media automation",
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "social/publish",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "sma-0002-0000-4000-8000-000000000000",
+      "name": "01 - Webhook - Publish Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -320
+      ],
+      "webhookId": "sma-0001-0000-4000-8000-000000000000",
+      "notes": "Entry point: POST /webhook/social/publish. Contract: account_id, channel_id, content, media, publish_mode, scheduled_at, timezone."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nconst out = [];\nfor (const item of $input.all()) {\n  const now = new Date();\n  const requestId = 'pub_' + makeUlid(now.getTime());\n\n  // The Webhook node wraps every request in an envelope:\n  //   { headers, params, query, body, webhookUrl, executionMode }\n  // Unwrap it so the rest of the engine only ever sees the caller's payload.\n  const envelope = item.json;\n  const isEnvelope = envelope && typeof envelope === 'object' && !Array.isArray(envelope)\n    && 'webhookUrl' in envelope && 'executionMode' in envelope && 'body' in envelope;\n  const payload = isEnvelope ? envelope.body : envelope;\n\n  logEvent({\n    node: '02', event: 'request_received', request_id: requestId,\n    payload_type: payload === null ? 'null'\n      : Array.isArray(payload) ? 'array'\n      : typeof payload,\n    unwrapped_envelope: isEnvelope,\n  });\n  out.push({\n    json: {\n      request_id: requestId,\n      received_at: now.toISOString(),\n      body: payload,\n      ctx: { errors: [], warnings: [], steps: ['02_request_received'] },\n    },\n  });\n}\nreturn out;"
+      },
+      "id": "sma-0003-0000-4000-8000-000000000000",
+      "name": "02 - Generate Request ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ---- timezone-safe datetime handling -----------------------------------\n// Interprets a naive local datetime inside an IANA timezone and converts it\n// to a real UTC instant. Handles DST gaps (rejects) and DST overlaps\n// (earliest occurrence wins). Never appends a bare \"Z\".\nfunction isValidTimeZone(tz) {\n  if (typeof tz !== 'string' || !tz.trim()) return false;\n  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch (e) { return false; }\n}\nfunction wallPartsIn(date, timeZone) {\n  const p = {};\n  for (const part of new Intl.DateTimeFormat('en-US', {\n    timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', second: '2-digit',\n  }).formatToParts(date)) p[part.type] = part.value;\n  return { y: +p.year, mo: +p.month, d: +p.day, h: (+p.hour) % 24, mi: +p.minute, s: +p.second };\n}\nfunction tzOffsetMs(date, timeZone) {\n  const p = wallPartsIn(date, timeZone);\n  return Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) - date.getTime();\n}\nvar DATETIME_RE = /^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?(?:[.,](\\d{1,9}))?(Z|z|[+-]\\d{2}:?\\d{2}|[+-]\\d{2})?$/;\nfunction parseLocal(value) {\n  if (typeof value !== 'string') return null;\n  var m = DATETIME_RE.exec(value.trim());\n  if (!m) return null;\n  var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5];\n  var sec = m[6] === undefined ? 0 : +m[6];\n  var ms = m[7] === undefined ? 0 : +(m[7] + '000').slice(0, 3);\n  if (mo < 1 || mo > 12) return null;\n  if (d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return null;\n  if (h > 23 || mi > 59 || sec > 59) return null;\n  var offsetMinutes = null;\n  if (m[8]) {\n    if (m[8] === 'Z' || m[8] === 'z') offsetMinutes = 0;\n    else {\n      var sign = m[8][0] === '-' ? -1 : 1;\n      var digits = m[8].slice(1).replace(':', '');\n      var oh = +digits.slice(0, 2);\n      var om = digits.length > 2 ? +digits.slice(2, 4) : 0;\n      if (oh > 23 || om > 59) return null;\n      offsetMinutes = sign * (oh * 60 + om);\n    }\n  }\n  return { y: y, mo: mo, d: d, h: h, mi: mi, sec: sec, ms: ms, offsetMinutes: offsetMinutes };\n}\nfunction zonedToUtc(value, timeZone) {\n  var p = parseLocal(value);\n  if (!p) return { ok: false, reason: 'INVALID_FORMAT' };\n  var wall = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.sec, p.ms);\n  if (p.offsetMinutes !== null) {\n    return {\n      ok: true,\n      date: new Date(wall - p.offsetMinutes * 60000),\n      offsetMinutes: p.offsetMinutes,\n      explicitOffset: true,\n    };\n  }\n  var ts = wall - tzOffsetMs(new Date(wall), timeZone);\n  ts = wall - tzOffsetMs(new Date(ts), timeZone);\n  var back = wallPartsIn(new Date(ts), timeZone);\n  if (back.y !== p.y || back.mo !== p.mo || back.d !== p.d ||\n      back.h !== p.h || back.mi !== p.mi || back.s !== p.sec) {\n    return { ok: false, reason: 'NONEXISTENT_LOCAL_TIME' };\n  }\n  return {\n    ok: true,\n    date: new Date(ts),\n    offsetMinutes: -tzOffsetMs(new Date(ts), timeZone) / 60000,\n    explicitOffset: false,\n  };\n}\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  const b = j.body;\n  const fail = (c, m) => ctx.errors.push({ code: c, message: m });\n  const str = (v) => typeof v === 'string' && v.trim().length > 0;\n\n  if (b === null || typeof b !== 'object' || Array.isArray(b)) {\n    fail('INVALID_REQUEST', 'Request body must be a JSON object.');\n    ctx.steps.push('03_contract_failed');\n    logEvent({ node: '03', event: 'contract_invalid', request_id: j.request_id, error_code: 'INVALID_REQUEST' });\n    return { json: { ...j, ctx } };\n  }\n\n  if (!str(b.account_id)) fail('MISSING_ACCOUNT_ID', 'account_id is required and must be a non-empty string.');\n  if (!str(b.channel_id)) fail('MISSING_CHANNEL_ID', 'channel_id is required and must be a non-empty string.');\n  if (typeof b.content !== 'string') fail('MISSING_CONTENT', 'content is required and must be a string.');\n  if (!str(b.publish_mode)) {\n    fail('INVALID_PUBLISH_MODE', 'publish_mode is required and must be NOW or SCHEDULE.');\n  } else if (!['NOW', 'SCHEDULE'].includes(b.publish_mode.trim().toUpperCase())) {\n    fail('INVALID_PUBLISH_MODE', 'publish_mode must be NOW or SCHEDULE (received \"' + b.publish_mode + '\").');\n  }\n  if (!str(b.timezone)) {\n    fail('INVALID_TIMEZONE', 'timezone is required and must be a valid IANA timezone, e.g. Asia/Dhaka.');\n  } else if (!isValidTimeZone(b.timezone.trim())) {\n    fail('INVALID_TIMEZONE', 'timezone \"' + b.timezone + '\" is not a valid IANA timezone, e.g. Asia/Dhaka.');\n  }\n  if (b.media !== undefined && b.media !== null && !Array.isArray(b.media)) {\n    fail('MEDIA_INVALID', 'media must be an array when provided.');\n  }\n\n  ctx.steps.push('03_contract_validated');\n  logEvent({ node: '03', event: 'contract_validated', request_id: j.request_id, error_count: ctx.errors.length });\n  return { json: { ...j, ctx } };\n});"
+      },
+      "id": "sma-0004-0000-4000-8000-000000000000",
+      "name": "03 - Validate Request Contract",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ===========================================================================\n// CENTRAL CONFIGURATION - the single source of truth for this engine.\n//\n// Adding accounts or channels later = edit ONLY this block. Nothing else changes.\n//\n// To move to PostgreSQL or your own backend later: replace the body of this\n// node with a DB read or HTTP call returning the SAME object shape. Every\n// downstream node reads j.config.accounts and is agnostic to its origin.\n//\n// NAMING NOTE: Buffer's current GraphQL API identifies a destination by\n// \"channelId\", not the legacy REST \"profile id\". The field is kept as\n// buffer_profile_id for contract stability; its value is a Buffer channel id.\n// ===========================================================================\nconst CONFIG = {\n  config_version: '1.0.0',\n  default_timezone: 'Asia/Dhaka',\n  buffer: {\n    api_base_url: 'https://api.buffer.com',\n    organization_id: 'REPLACE_WITH_BUFFER_ORGANIZATION_ID',\n    organization_name: 'My organization',\n    // Guard rail for Buffer's scheduling horizon. Buffer is the final\n    // authority and rejects anything beyond its own range.\n    max_schedule_days_ahead: 365,\n  },\n  supported_platforms: ['instagram', 'facebook', 'linkedin', 'twitter', 'threads'],\n  // Platforms that will not accept a text-only post. Checked locally in node 07\n  // so the request fails fast instead of round-tripping to Buffer.\n  media_required_for: ['instagram'],\n  // Service-specific metadata required by Buffer's createPost mutation.\n  // Keyed by platform (= Buffer service name), sent as metadata.<platform>.\n  // Leave a platform out entirely if Buffer requires nothing from it.\n  platform_metadata: {\n    instagram: { type: 'post', shouldShareToFeed: true },\n    facebook: { type: 'post' },\n  },\n  accounts: [\n    {\n      account_id: 'company',\n      account_name: 'Company',\n      active: true,\n      channels: [\n        { channel_id: 'company_instagram', platform: 'instagram', buffer_profile_id: 'REPLACE_WITH_BUFFER_CHANNEL_ID_COMPANY_INSTAGRAM', buffer_channel_name: 'REPLACE_WITH_BUFFER_CHANNEL_NAME', active: true },\n        { channel_id: 'company_facebook', platform: 'facebook', buffer_profile_id: 'REPLACE_WITH_BUFFER_CHANNEL_ID_COMPANY_FACEBOOK', buffer_channel_name: 'REPLACE_WITH_BUFFER_CHANNEL_NAME', active: true },\n        { channel_id: 'company_linkedin', platform: 'linkedin', buffer_profile_id: 'REPLACE_WITH_BUFFER_CHANNEL_ID_COMPANY_LINKEDIN', buffer_channel_name: 'REPLACE_WITH_BUFFER_CHANNEL_NAME', active: true },\n      ],\n    },\n  ],\n};\n\nreturn $input.all().map((item) => {\n  const ctx = item.json.ctx;\n  ctx.config_version = CONFIG.config_version;\n  ctx.steps.push('04_config_loaded');\n  logEvent({\n    node: '04', event: 'config_loaded', request_id: item.json.request_id,\n    config_version: CONFIG.config_version,\n    accounts: CONFIG.accounts.length,\n    channels: CONFIG.accounts.reduce((n, a) => n + a.channels.length, 0),\n  });\n  return { json: { ...item.json, config: CONFIG, ctx } };\n});"
+      },
+      "id": "sma-0005-0000-4000-8000-000000000000",
+      "name": "04 - Load Account Configuration",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  const b = j.body;\n  const config = j.config;\n  const fail = (c, m) => ctx.errors.push({ code: c, message: m });\n  const done = (step) => { ctx.steps.push(step); return { json: { ...j, ctx } }; };\n\n  const accountId = typeof b.account_id === 'string' ? b.account_id.trim() : '';\n  const channelId = typeof b.channel_id === 'string' ? b.channel_id.trim() : '';\n\n  ctx.input = {\n    account_id: accountId,\n    channel_id: channelId,\n    publish_mode: typeof b.publish_mode === 'string' ? b.publish_mode.trim().toUpperCase() : null,\n    timezone: typeof b.timezone === 'string' ? b.timezone.trim() : null,\n    scheduled_at: b.scheduled_at === undefined ? null : b.scheduled_at,\n    media_count: Array.isArray(b.media) ? b.media.length : 0,\n  };\n\n  if (!accountId || !channelId) return done('05_resolution_skipped');\n\n  const account = config.accounts.find((a) => a.account_id === accountId);\n  if (!account) { fail('ACCOUNT_NOT_FOUND', 'The requested account does not exist.'); return done('05_account_not_found'); }\n  if (account.active === false) { fail('ACCOUNT_NOT_FOUND', 'The requested account exists but is not active.'); return done('05_account_inactive'); }\n\n  const channel = account.channels.find((c) => c.channel_id === channelId);\n  if (!channel) {\n    const owner = config.accounts.find((a) => a.channels.some((c) => c.channel_id === channelId));\n    if (owner) {\n      fail('CHANNEL_NOT_BELONG_TO_ACCOUNT', 'Channel \"' + channelId + '\" belongs to account \"' + owner.account_id + '\", not \"' + account.account_id + '\".');\n    } else {\n      fail('CHANNEL_NOT_FOUND', 'Channel \"' + channelId + '\" does not exist.');\n    }\n    return done('05_channel_not_found');\n  }\n  if (channel.active === false) { fail('CHANNEL_INACTIVE', 'Channel \"' + channel.channel_id + '\" is not active.'); return done('05_channel_inactive'); }\n\n  const platform = typeof channel.platform === 'string' ? channel.platform.trim().toLowerCase() : '';\n  if (!config.supported_platforms.includes(platform)) {\n    fail('INVALID_REQUEST', 'Platform \"' + channel.platform + '\" is not supported by this engine.');\n    return done('05_platform_unsupported');\n  }\n\n  const profileId = typeof channel.buffer_profile_id === 'string' ? channel.buffer_profile_id.trim() : '';\n  if (!profileId || /^(REAL_BUFFER_PROFILE_ID|REPLACE|TODO|CHANGEME|XXX)/i.test(profileId)) {\n    fail('BUFFER_PROFILE_NOT_CONFIGURED', 'Channel \"' + channel.channel_id + '\" has no Buffer profile configured.');\n    return done('05_profile_missing');\n  }\n\n  ctx.publishing_context = {\n    account_id: account.account_id,\n    account_name: account.account_name,\n    channel_id: channel.channel_id,\n    platform: platform,\n    buffer_profile_id: profileId,\n    buffer_channel_name: channel.buffer_channel_name || null,\n  };\n  ctx.steps.push('05_channel_resolved');\n  logEvent({\n    node: '05', event: 'channel_resolved', request_id: j.request_id,\n    account_id: account.account_id, channel_id: channel.channel_id,\n    platform: platform, buffer_profile_id: profileId,\n  });\n  return { json: { ...j, ctx } };\n});"
+      },
+      "id": "sma-0006-0000-4000-8000-000000000000",
+      "name": "05 - Resolve Account and Channel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  const raw = j.body && typeof j.body === 'object' && !Array.isArray(j.body) ? j.body.content : undefined;\n\n  if (raw === undefined) {\n    // Either content is absent, or the whole body was malformed. Node 03 has\n    // already reported the correct code, so do not report it a second time.\n    return { json: { ...j, ctx } };\n  }\n  if (typeof raw !== 'string') {\n    ctx.errors.push({ code: 'MISSING_CONTENT', message: 'content is required and must be a string.' });\n    return { json: { ...j, ctx } };\n  }\n  // Trim only. Wording, casing, hashtags and emoji are never altered.\n  const trimmed = raw.replace(/^[\\s\\uFEFF]+/, '').replace(/[\\s\\uFEFF]+$/, '');\n  if (trimmed.length === 0) {\n    ctx.errors.push({ code: 'CONTENT_EMPTY', message: 'content must contain at least one non-whitespace character.' });\n    return { json: { ...j, ctx } };\n  }\n  ctx.content = trimmed;\n  ctx.content_length = trimmed.length;\n  ctx.steps.push('06_content_validated');\n  logEvent({ node: '06', event: 'content_validated', request_id: j.request_id, content_length: trimmed.length });\n  return { json: { ...j, ctx } };\n});"
+      },
+      "id": "sma-0007-0000-4000-8000-000000000000",
+      "name": "06 - Validate Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nconst ALLOWED_TYPES = ['image', 'video'];\n\n// The n8n Code sandbox does not always expose the URL global, so this falls\n// back to a pattern check when new URL() is unavailable.\nfunction isFetchableHttpUrl(value) {\n  if (typeof value !== 'string') return false;\n  const v = value.trim();\n  if (!v || !/^https?:\\/\\//i.test(v)) return false;\n  try {\n    const u = new URL(v);\n    return (u.protocol === 'http:' || u.protocol === 'https:') && !!u.hostname;\n  } catch (e) {\n    const m = /^https?:\\/\\/([^\\s\\/?#:]+)(?::(\\d{2,5}))?([\\s\\S]*)$/i.exec(v);\n    return !!m && m[1].indexOf('.') > 0 && !/\\s/.test(v);\n  }\n}\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  if (!j.body || typeof j.body !== 'object' || Array.isArray(j.body)) {\n    return { json: { ...j, ctx } };\n  }\n  let media = j.body.media;\n  if (media === undefined || media === null) media = [];\n\n  if (!Array.isArray(media)) {\n    // Already reported by node 03 with the same code.\n    ctx.media = [];\n    return { json: { ...j, ctx } };\n  }\n\n  const clean = [];\n  media.forEach((m, i) => {\n    if (!m || typeof m !== 'object' || Array.isArray(m)) {\n      ctx.errors.push({ code: 'MEDIA_INVALID', message: 'media[' + i + '] must be an object.' });\n      return;\n    }\n    const type = typeof m.type === 'string' ? m.type.trim().toLowerCase() : '';\n    if (!ALLOWED_TYPES.includes(type)) {\n      ctx.errors.push({ code: 'MEDIA_INVALID', message: 'media[' + i + '].type must be one of: image, video.' });\n      return;\n    }\n    const url = typeof m.url === 'string' ? m.url.trim() : '';\n    if (!isFetchableHttpUrl(url)) {\n      ctx.errors.push({ code: 'MEDIA_INVALID', message: 'media[' + i + '].url must be a valid public http(s) URL that Buffer can fetch.' });\n      return;\n    }\n    // Unknown keys (asset_id, alt_text, ...) are preserved so the contract can\n    // grow without an architectural change.\n    clean.push({\n      type: type,\n      url: url,\n      asset_id: m.asset_id === undefined ? null : m.asset_id,\n      alt_text: typeof m.alt_text === 'string' ? m.alt_text : null,\n    });\n  });\n\n  ctx.media = clean;\n  ctx.steps.push('07_media_validated');\n\n  // Some platforms reject a text-only post outright. Fail locally, not at Buffer.\n  const platform = ctx.publishing_context && ctx.publishing_context.platform;\n  const requiresMedia = Array.isArray(j.config.media_required_for) && j.config.media_required_for.includes(platform);\n  if (requiresMedia && clean.length === 0) {\n    ctx.errors.push({\n      code: 'MEDIA_INVALID',\n      message: 'Platform \"' + platform + '\" requires at least one image or video. Provide a non-empty media array.',\n    });\n  }\n\n  logEvent({ node: '07', event: 'media_validated', request_id: j.request_id, media_count: clean.length, rejected: media.length - clean.length, platform: platform, requires_media: !!requiresMedia });\n  return { json: { ...j, ctx } };\n});"
+      },
+      "id": "sma-0008-0000-4000-8000-000000000000",
+      "name": "07 - Validate Media",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ---- timezone-safe datetime handling -----------------------------------\n// Interprets a naive local datetime inside an IANA timezone and converts it\n// to a real UTC instant. Handles DST gaps (rejects) and DST overlaps\n// (earliest occurrence wins). Never appends a bare \"Z\".\nfunction isValidTimeZone(tz) {\n  if (typeof tz !== 'string' || !tz.trim()) return false;\n  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch (e) { return false; }\n}\nfunction wallPartsIn(date, timeZone) {\n  const p = {};\n  for (const part of new Intl.DateTimeFormat('en-US', {\n    timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', second: '2-digit',\n  }).formatToParts(date)) p[part.type] = part.value;\n  return { y: +p.year, mo: +p.month, d: +p.day, h: (+p.hour) % 24, mi: +p.minute, s: +p.second };\n}\nfunction tzOffsetMs(date, timeZone) {\n  const p = wallPartsIn(date, timeZone);\n  return Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) - date.getTime();\n}\nvar DATETIME_RE = /^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?(?:[.,](\\d{1,9}))?(Z|z|[+-]\\d{2}:?\\d{2}|[+-]\\d{2})?$/;\nfunction parseLocal(value) {\n  if (typeof value !== 'string') return null;\n  var m = DATETIME_RE.exec(value.trim());\n  if (!m) return null;\n  var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5];\n  var sec = m[6] === undefined ? 0 : +m[6];\n  var ms = m[7] === undefined ? 0 : +(m[7] + '000').slice(0, 3);\n  if (mo < 1 || mo > 12) return null;\n  if (d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return null;\n  if (h > 23 || mi > 59 || sec > 59) return null;\n  var offsetMinutes = null;\n  if (m[8]) {\n    if (m[8] === 'Z' || m[8] === 'z') offsetMinutes = 0;\n    else {\n      var sign = m[8][0] === '-' ? -1 : 1;\n      var digits = m[8].slice(1).replace(':', '');\n      var oh = +digits.slice(0, 2);\n      var om = digits.length > 2 ? +digits.slice(2, 4) : 0;\n      if (oh > 23 || om > 59) return null;\n      offsetMinutes = sign * (oh * 60 + om);\n    }\n  }\n  return { y: y, mo: mo, d: d, h: h, mi: mi, sec: sec, ms: ms, offsetMinutes: offsetMinutes };\n}\nfunction zonedToUtc(value, timeZone) {\n  var p = parseLocal(value);\n  if (!p) return { ok: false, reason: 'INVALID_FORMAT' };\n  var wall = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.sec, p.ms);\n  if (p.offsetMinutes !== null) {\n    return {\n      ok: true,\n      date: new Date(wall - p.offsetMinutes * 60000),\n      offsetMinutes: p.offsetMinutes,\n      explicitOffset: true,\n    };\n  }\n  var ts = wall - tzOffsetMs(new Date(wall), timeZone);\n  ts = wall - tzOffsetMs(new Date(ts), timeZone);\n  var back = wallPartsIn(new Date(ts), timeZone);\n  if (back.y !== p.y || back.mo !== p.mo || back.d !== p.d ||\n      back.h !== p.h || back.mi !== p.mi || back.s !== p.sec) {\n    return { ok: false, reason: 'NONEXISTENT_LOCAL_TIME' };\n  }\n  return {\n    ok: true,\n    date: new Date(ts),\n    offsetMinutes: -tzOffsetMs(new Date(ts), timeZone) / 60000,\n    explicitOffset: false,\n  };\n}\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  const b = j.body;\n  const mode = typeof b.publish_mode === 'string' ? b.publish_mode.trim().toUpperCase() : '';\n  const timezone = typeof b.timezone === 'string' ? b.timezone.trim() : '';\n\n  ctx.publish_mode = mode;\n\n  if (mode === 'NOW') {\n    // A NOW publish never carries a schedule value: Buffer would reject it.\n    if (b.scheduled_at !== undefined && b.scheduled_at !== null && b.scheduled_at !== '') {\n      ctx.warnings.push('scheduled_at was supplied but ignored because publish_mode is NOW.');\n    }\n    ctx.scheduled_at_raw = null;\n    ctx.timezone = timezone;\n    ctx.steps.push('08_mode_now');\n    logEvent({ node: '08', event: 'mode_now', request_id: j.request_id });\n    return { json: { ...j, ctx } };\n  }\n\n  if (mode === 'SCHEDULE') {\n    if (!isValidTimeZone(timezone)) {\n      ctx.errors.push({ code: 'INVALID_TIMEZONE', message: 'timezone \"' + timezone + '\" is not a valid IANA timezone.' });\n      return { json: { ...j, ctx } };\n    }\n    const raw = b.scheduled_at;\n    if (raw === undefined || raw === null || raw === '') {\n      ctx.errors.push({ code: 'INVALID_SCHEDULE', message: 'scheduled_at is required when publish_mode is SCHEDULE.' });\n      return { json: { ...j, ctx } };\n    }\n    const converted = zonedToUtc(raw, timezone);\n    if (!converted.ok) {\n      ctx.errors.push({\n        code: 'INVALID_SCHEDULE',\n        message: converted.reason === 'NONEXISTENT_LOCAL_TIME'\n          ? 'scheduled_at \"' + raw + '\" does not exist in ' + timezone + ' (daylight saving gap).'\n          : 'scheduled_at must be a valid ISO 8601 datetime, e.g. 2026-10-12T20:00:00',\n      });\n      return { json: { ...j, ctx } };\n    }\n    if (converted.date.getTime() <= Date.now()) {\n      ctx.errors.push({ code: 'SCHEDULE_IN_PAST', message: 'The scheduled time must be in the future.' });\n      return { json: { ...j, ctx } };\n    }\n    const maxDays = j.config.buffer.max_schedule_days_ahead;\n    if (maxDays > 0 && converted.date.getTime() > Date.now() + maxDays * 86400000) {\n      ctx.errors.push({ code: 'INVALID_SCHEDULE', message: 'scheduled_at must be within ' + maxDays + ' days from now.' });\n      return { json: { ...j, ctx } };\n    }\n    ctx.scheduled_at_raw = String(raw).trim();\n    ctx.timezone = timezone;\n    ctx.steps.push('08_schedule_validated');\n  }\n\n  logEvent({\n    node: '08', event: 'schedule_validated', request_id: j.request_id,\n    publish_mode: ctx.publish_mode, timezone: ctx.timezone, error_count: ctx.errors.length,\n  });\n  return { json: { ...j, ctx } };\n});"
+      },
+      "id": "sma-0009-0000-4000-8000-000000000000",
+      "name": "08 - Validate Publish Mode and Schedule",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// Sets the route. Buffer is only reachable when ctx.route === 'OK'.\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  ctx.route = ctx.errors.length === 0 ? 'OK' : 'ERROR';\n  ctx.steps.push(ctx.route === 'OK' ? '09_validation_passed' : '09_validation_failed');\n  logEvent({\n    node: '09', event: 'validation_result', request_id: j.request_id,\n    route: ctx.route, error_count: ctx.errors.length,\n    first_error: ctx.errors.length ? ctx.errors[0].code : null,\n  });\n  return { json: j };\n});"
+      },
+      "id": "sma-0010-0000-4000-8000-000000000000",
+      "name": "09 - Mark Validation Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "cond-0011-0000-4000-8000-000000000000",
+              "leftValue": "={{ $json.ctx.route }}",
+              "rightValue": "OK",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "sma-0012-0000-4000-8000-000000000000",
+      "name": "10 - Route - Validation Gate",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1980,
+        -320
+      ],
+      "notes": "Single stop point: any validation failure means Buffer is never called."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nvar ERROR_HTTP_STATUS = {\n  INVALID_REQUEST: 400,\n  MISSING_ACCOUNT_ID: 400,\n  MISSING_CHANNEL_ID: 400,\n  MISSING_CONTENT: 400,\n  CONTENT_EMPTY: 400,\n  MEDIA_INVALID: 400,\n  INVALID_PUBLISH_MODE: 400,\n  INVALID_TIMEZONE: 400,\n  INVALID_SCHEDULE: 400,\n  SCHEDULE_IN_PAST: 400,\n  ACCOUNT_NOT_FOUND: 404,\n  CHANNEL_NOT_FOUND: 404,\n  CHANNEL_NOT_BELONG_TO_ACCOUNT: 404,\n  CHANNEL_INACTIVE: 409,\n  BUFFER_PROFILE_NOT_CONFIGURED: 409,\n  BUFFER_RATE_LIMIT: 429,\n  BUFFER_AUTH_ERROR: 502,\n  BUFFER_BAD_REQUEST: 422,\n  BUFFER_SERVER_ERROR: 502,\n  BUFFER_NETWORK_ERROR: 502,\n  UNKNOWN_ERROR: 500,\n};\nfunction statusFor(code) {\n  return ERROR_HTTP_STATUS[code] || 500;\n}\n\n// Turns accumulated validation errors into the standard error envelope.\n// Buffer is never contacted on this path.\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx || {};\n  const errors = ctx.errors && ctx.errors.length ? ctx.errors : [{ code: 'UNKNOWN_ERROR', message: 'Unknown validation failure.' }];\n  const primary = errors[0];\n\n  logEvent({\n    node: '11', event: 'validation_error_response', request_id: j.request_id,\n    error_code: primary.code, error_count: errors.length,\n    account_id: ctx.input && ctx.input.account_id,\n    channel_id: ctx.input && ctx.input.channel_id,\n    platform: ctx.publishing_context && ctx.publishing_context.platform,\n  });\n\n  return {\n    json: {\n      request_id: j.request_id,\n      http_status: statusFor(primary.code),\n      body: {\n        success: false,\n        request_id: j.request_id,\n        error: { code: primary.code, message: primary.message },\n        errors: errors,\n        account_id: (ctx.input && ctx.input.account_id) || null,\n        channel_id: (ctx.input && ctx.input.channel_id) || null,\n        platform: (ctx.publishing_context && ctx.publishing_context.platform) || null,\n        publish_mode: (ctx.input && ctx.input.publish_mode) || null,\n      },\n    },\n  };\n});"
+      },
+      "id": "sma-0013-0000-4000-8000-000000000000",
+      "name": "11 - Build Validation Error Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ---- timezone-safe datetime handling -----------------------------------\n// Interprets a naive local datetime inside an IANA timezone and converts it\n// to a real UTC instant. Handles DST gaps (rejects) and DST overlaps\n// (earliest occurrence wins). Never appends a bare \"Z\".\nfunction isValidTimeZone(tz) {\n  if (typeof tz !== 'string' || !tz.trim()) return false;\n  try { new Intl.DateTimeFormat('en-US', { timeZone: tz }); return true; } catch (e) { return false; }\n}\nfunction wallPartsIn(date, timeZone) {\n  const p = {};\n  for (const part of new Intl.DateTimeFormat('en-US', {\n    timeZone, hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',\n    hour: '2-digit', minute: '2-digit', second: '2-digit',\n  }).formatToParts(date)) p[part.type] = part.value;\n  return { y: +p.year, mo: +p.month, d: +p.day, h: (+p.hour) % 24, mi: +p.minute, s: +p.second };\n}\nfunction tzOffsetMs(date, timeZone) {\n  const p = wallPartsIn(date, timeZone);\n  return Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) - date.getTime();\n}\nvar DATETIME_RE = /^(\\d{4})-(\\d{2})-(\\d{2})[T ](\\d{2}):(\\d{2})(?::(\\d{2}))?(?:[.,](\\d{1,9}))?(Z|z|[+-]\\d{2}:?\\d{2}|[+-]\\d{2})?$/;\nfunction parseLocal(value) {\n  if (typeof value !== 'string') return null;\n  var m = DATETIME_RE.exec(value.trim());\n  if (!m) return null;\n  var y = +m[1], mo = +m[2], d = +m[3], h = +m[4], mi = +m[5];\n  var sec = m[6] === undefined ? 0 : +m[6];\n  var ms = m[7] === undefined ? 0 : +(m[7] + '000').slice(0, 3);\n  if (mo < 1 || mo > 12) return null;\n  if (d < 1 || d > new Date(Date.UTC(y, mo, 0)).getUTCDate()) return null;\n  if (h > 23 || mi > 59 || sec > 59) return null;\n  var offsetMinutes = null;\n  if (m[8]) {\n    if (m[8] === 'Z' || m[8] === 'z') offsetMinutes = 0;\n    else {\n      var sign = m[8][0] === '-' ? -1 : 1;\n      var digits = m[8].slice(1).replace(':', '');\n      var oh = +digits.slice(0, 2);\n      var om = digits.length > 2 ? +digits.slice(2, 4) : 0;\n      if (oh > 23 || om > 59) return null;\n      offsetMinutes = sign * (oh * 60 + om);\n    }\n  }\n  return { y: y, mo: mo, d: d, h: h, mi: mi, sec: sec, ms: ms, offsetMinutes: offsetMinutes };\n}\nfunction zonedToUtc(value, timeZone) {\n  var p = parseLocal(value);\n  if (!p) return { ok: false, reason: 'INVALID_FORMAT' };\n  var wall = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.sec, p.ms);\n  if (p.offsetMinutes !== null) {\n    return {\n      ok: true,\n      date: new Date(wall - p.offsetMinutes * 60000),\n      offsetMinutes: p.offsetMinutes,\n      explicitOffset: true,\n    };\n  }\n  var ts = wall - tzOffsetMs(new Date(wall), timeZone);\n  ts = wall - tzOffsetMs(new Date(ts), timeZone);\n  var back = wallPartsIn(new Date(ts), timeZone);\n  if (back.y !== p.y || back.mo !== p.mo || back.d !== p.d ||\n      back.h !== p.h || back.mi !== p.mi || back.s !== p.sec) {\n    return { ok: false, reason: 'NONEXISTENT_LOCAL_TIME' };\n  }\n  return {\n    ok: true,\n    date: new Date(ts),\n    offsetMinutes: -tzOffsetMs(new Date(ts), timeZone) / 60000,\n    explicitOffset: false,\n  };\n}\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n\n  ctx.buffer_due_at = null;\n  ctx.utc_offset_minutes = null;\n  ctx.schedule_source_offset_explicit = false;\n\n  if (ctx.publish_mode === 'SCHEDULE') {\n    const r = zonedToUtc(ctx.scheduled_at_raw, ctx.timezone);\n    if (!r.ok) {\n      ctx.errors.push({ code: 'INVALID_SCHEDULE', message: 'scheduled_at could not be converted to a UTC instant.' });\n      ctx.route = 'ERROR';\n      return { json: { ...j, ctx } };\n    }\n    ctx.buffer_due_at = r.date.toISOString();\n    ctx.utc_offset_minutes = r.offsetMinutes;\n    ctx.schedule_source_offset_explicit = r.explicitOffset;\n  }\n\n  ctx.steps.push('12_datetime_normalized');\n  logEvent({\n    node: '12', event: 'datetime_normalized', request_id: j.request_id,\n    publish_mode: ctx.publish_mode,\n    scheduled_at_local: ctx.scheduled_at_raw,\n    timezone: ctx.timezone,\n    utc_offset_minutes: ctx.utc_offset_minutes,\n    buffer_due_at_utc: ctx.buffer_due_at,\n  });\n  return { json: { ...j, ctx } };\n});"
+      },
+      "id": "sma-0014-0000-4000-8000-000000000000",
+      "name": "12 - Normalize Schedule to UTC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\n// ===========================================================================\n// The ONLY node that knows Buffer's wire format. Everything upstream is\n// provider-neutral. Buffer's API is GraphQL (POST https://api.buffer.com);\n// the legacy api.bufferapp.com REST API is deprecated and is NOT used here.\n// ===========================================================================\nconst BUFFER_MUTATION = \"mutation CreatePost($input: CreatePostInput!) {\\n  createPost(input: $input) {\\n    __typename\\n    ... on PostActionSuccess {\\n      post {\\n        id\\n        text\\n        status\\n        dueAt\\n        channelId\\n        channelService\\n        externalLink\\n        isCustomScheduled\\n        shareMode\\n        via\\n        # Buffer accepts a post with HTTP 200 and can still fail it later\\n        # (for example when it cannot download the media). Without this the\\n        # caller would see a false success.\\n        error {\\n          message\\n        }\\n      }\\n    }\\n    ... on MutationError {\\n      message\\n    }\\n  }\\n}\";\n\nreturn $input.all().map((item) => {\n  const j = item.json;\n  const ctx = j.ctx;\n  const pc = ctx.publishing_context;\n  const nowMode = ctx.publish_mode === 'NOW';\n\n  const assets = (ctx.media || []).map((m) => {\n    const entry = {};\n    entry[m.type] = { url: m.url };\n    // ImageMetadataInput.altText is non-null, so metadata is only sent when\n    // alt text actually exists.\n    if (m.type === 'image' && m.alt_text) entry.image.metadata = { altText: m.alt_text };\n    return entry;\n  });\n\n  const input = {\n    text: ctx.content,\n    channelId: pc.buffer_profile_id,\n    schedulingType: 'automatic',\n    mode: nowMode ? 'shareNow' : 'customScheduled',\n    source: 'n8n:' + j.request_id,\n  };\n  if (!nowMode && ctx.buffer_due_at) input.dueAt = ctx.buffer_due_at;\n  if (assets.length) input.assets = assets;\n\n  // Platform-specific metadata Buffer requires (e.g. Instagram needs a post\n  // type). Fully config-driven: add a platform key and it is sent automatically.\n  const platformMeta = (j.config.platform_metadata || {})[pc.platform];\n  if (platformMeta) {\n    const meta = {};\n    meta[pc.platform] = Object.assign({}, platformMeta);\n    if (assets.length > 1 && pc.platform === 'instagram') meta[pc.platform].type = 'carousel';\n    input.metadata = meta;\n  }\n\n  ctx.buffer_mode = input.mode;\n  ctx.steps.push('13_payload_built');\n\n  logEvent({\n    node: '13', event: 'payload_built', request_id: j.request_id,\n    account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n    buffer_profile_id: pc.buffer_profile_id,\n    publish_mode: ctx.publish_mode, buffer_mode: input.mode,\n    due_at: input.dueAt || null, asset_count: assets.length,\n    content_length: ctx.content.length,\n  });\n\n  return {\n    json: {\n      request_id: j.request_id,\n      received_at: j.received_at,\n      ctx: ctx,\n      config: j.config,\n      graphql: { operationName: 'CreatePost', query: BUFFER_MUTATION, variables: { input: input } },\n      // Sent verbatim as the raw request body. This is the single serialisation\n      // point for the Buffer payload.\n      graphql_body: JSON.stringify({\n        operationName: 'CreatePost',\n        query: BUFFER_MUTATION,\n        variables: { input: input },\n      }),\n    },\n  };\n});"
+      },
+      "id": "sma-0015-0000-4000-8000-000000000000",
+      "name": "13 - Build Buffer Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.buffer.com",
+        "sendQuery": false,
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.graphql_body }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "sma-0016-0000-4000-8000-000000000000",
+      "name": "14 - Buffer - Create Post",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2640,
+        -460
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "Buffer API (Bearer)"
+        }
+      },
+      "retryOnFail": false,
+      "notes": "neverError=true: HTTP 4xx/5xx/429 return on the normal output with a status code so node 14 can classify them. Only genuine transport failures use the error output (node 19). The API key lives in the n8n credential and never appears in this workflow."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nvar ERROR_HTTP_STATUS = {\n  INVALID_REQUEST: 400,\n  MISSING_ACCOUNT_ID: 400,\n  MISSING_CHANNEL_ID: 400,\n  MISSING_CONTENT: 400,\n  CONTENT_EMPTY: 400,\n  MEDIA_INVALID: 400,\n  INVALID_PUBLISH_MODE: 400,\n  INVALID_TIMEZONE: 400,\n  INVALID_SCHEDULE: 400,\n  SCHEDULE_IN_PAST: 400,\n  ACCOUNT_NOT_FOUND: 404,\n  CHANNEL_NOT_FOUND: 404,\n  CHANNEL_NOT_BELONG_TO_ACCOUNT: 404,\n  CHANNEL_INACTIVE: 409,\n  BUFFER_PROFILE_NOT_CONFIGURED: 409,\n  BUFFER_RATE_LIMIT: 429,\n  BUFFER_AUTH_ERROR: 502,\n  BUFFER_BAD_REQUEST: 422,\n  BUFFER_SERVER_ERROR: 502,\n  BUFFER_NETWORK_ERROR: 502,\n  UNKNOWN_ERROR: 500,\n};\nfunction statusFor(code) {\n  return ERROR_HTTP_STATUS[code] || 500;\n}\n\nconst RETRYABLE_TYPES = ['UnexpectedError', 'RestProxyError'];\nconst NOT_FOUND_TYPES = ['NotFoundError', 'PostChannelNotFoundError'];\nconst BAD_INPUT_TYPES = ['InvalidInputError', 'PostInvalidInputError'];\n\n// fullResponse:true replaces the item with { body, headers, statusCode }, so the\n// publishing context is read back from node 12 rather than from this item.\nconst src = $('13 - Build Buffer Payload').first().json;\nconst ctx = src.ctx || {};\nconst pc = ctx.publishing_context || {};\nconst requestId = src.request_id;\n\nreturn $input.all().map((item) => {\n  const raw = item.json || {};\n  const headers = raw.headers || {};\n  let body = raw.body !== undefined ? raw.body : raw;\n  if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = {}; } }\n  if (!body || typeof body !== 'object') body = {};\n  const status = Number(raw.statusCode !== undefined ? raw.statusCode : raw.status || 0);\n\n  const errorResult = (c, message) => {\n    const gqlCode = (body.errors && body.errors[0] && body.errors[0].extensions && body.errors[0].extensions.code) || null;\n    logEvent({\n      node: '15', event: 'buffer_error', request_id: requestId,\n      account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n      http_status: status, error_code: c, buffer_code: body.__typename || gqlCode || null, attempt: 1,\n    });\n    ctx.steps.push('15_buffer_error');\n    return {\n      request_id: requestId,\n      http_status: statusFor(c),\n      body: {\n        success: false,\n        request_id: requestId,\n        error: { code: c, message: message },\n        errors: [{ code: c, message: message }].concat(ctx.errors || []),\n        account_id: pc.account_id || null,\n        channel_id: pc.channel_id || null,\n        platform: pc.platform || null,\n        publish_mode: ctx.publish_mode || null,\n        http_status_from_buffer: status,\n        attempts: 1,\n      },\n    };\n  };\n\n  if (status === 0) { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_NETWORK_ERROR', 'Buffer returned no HTTP status.'), ctx } }; }\n  if (status === 429) {\n    const ra = headers['retry-after'] !== undefined ? headers['retry-after'] : headers['Retry-After'];\n    ctx.route = 'ERROR';\n    return { json: { ...errorResult('BUFFER_RATE_LIMIT', 'Buffer rate limit exceeded. Retry after ' + (ra === undefined ? 'an unknown number of' : ra + '') + ' seconds.'), ctx } };\n  }\n  if (status === 401 || status === 403) { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_AUTH_ERROR', 'Buffer rejected the API credentials.'), ctx } }; }\n  if (status >= 500) { ctx.route = 'RETRY'; return { json: { ...errorResult('BUFFER_SERVER_ERROR', 'Buffer returned a server error (HTTP ' + status + ').'), ctx, graphql_body: src.graphql_body } }; }\n  if (status >= 400) { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_BAD_REQUEST', 'Buffer rejected the request (HTTP ' + status + ').'), ctx } }; }\n\n  if (Array.isArray(body.errors) && body.errors.length) {\n    const gcode = (body.errors[0].extensions && body.errors[0].extensions.code) || 'UNKNOWN';\n    const gmsg = body.errors[0].message || 'Unknown Buffer error.';\n    const map = {\n      UNAUTHORIZED: ['BUFFER_AUTH_ERROR', 'ERROR'],\n      FORBIDDEN: ['BUFFER_AUTH_ERROR', 'ERROR'],\n      RATE_LIMIT_EXCEEDED: ['BUFFER_RATE_LIMIT', 'ERROR'],\n      NOT_FOUND: ['BUFFER_BAD_REQUEST', 'ERROR'],\n      GRAPHQL_VALIDATION_FAILED: ['BUFFER_BAD_REQUEST', 'ERROR'],\n      BAD_USER_INPUT: ['BUFFER_BAD_REQUEST', 'ERROR'],\n      UNEXPECTED: ['BUFFER_SERVER_ERROR', 'RETRY'],\n      INTERNAL_SERVER_ERROR: ['BUFFER_SERVER_ERROR', 'RETRY'],\n    };\n    const mapped = map[gcode] || ['UNKNOWN_ERROR', 'ERROR'];\n    ctx.route = mapped[1];\n    return { json: { ...errorResult(mapped[0], 'Buffer API error [' + gcode + ']: ' + gmsg), ctx, graphql_body: src.graphql_body } };\n  }\n\n  const cp = body.data && body.data.createPost;\n  if (!cp) { ctx.route = 'ERROR'; return { json: { ...errorResult('UNKNOWN_ERROR', 'Buffer response did not contain a createPost result.'), ctx } }; }\n\n  if (cp.__typename === 'PostActionSuccess' && cp.post) {\n    const post = cp.post;\n\n    // Buffer can accept a post and still fail it immediately afterwards, most\n    // often because it could not download the media. Reporting success here\n    // would be a lie, so surface it as a failure instead.\n    if (post.error && post.error.message) {\n      const reason = String(post.error.message);\n      // Buffer reports an unreachable asset with a recognisable message.\n      // Give the caller a specific code so the UI can say something useful.\n      const isMediaProblem = /media|image|video|url|publicly accessible/i.test(reason);\n      const code = isMediaProblem ? 'MEDIA_NOT_ACCESSIBLE' : 'BUFFER_POST_FAILED';\n      logEvent({\n        node: '15', event: 'buffer_post_error', request_id: requestId,\n        account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n        buffer_publication_id: post.id, status: post.status,\n        error_code: code, buffer_message: reason,\n      });\n      ctx.route = 'ERROR';\n      return {\n        json: {\n          ...errorResult(code, reason),\n          ctx,\n        },\n      };\n    }\n\n    logEvent({\n      node: '15', event: 'buffer_success', request_id: requestId,\n      account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n      publish_mode: ctx.publish_mode, buffer_publication_id: post.id,\n      status: post.status, due_at: post.dueAt || null, http_status: status, attempt: 1,\n    });\n    ctx.steps.push('15_buffer_success');\n    ctx.route = 'SUCCESS';\n    const b = {\n      success: true,\n      request_id: requestId,\n      status: ctx.publish_mode === 'NOW' ? 'published' : 'scheduled',\n      account_id: pc.account_id,\n      channel_id: pc.channel_id,\n      platform: pc.platform,\n      buffer_publication_id: post.id,\n      buffer_status: post.status || null,\n    };\n    if (ctx.publish_mode === 'SCHEDULE') {\n      b.scheduled_at = ctx.scheduled_at_raw;\n      b.timezone = ctx.timezone;\n      b.buffer_due_at_utc = ctx.buffer_due_at;\n    } else {\n      b.external_link = post.externalLink || null;\n    }\n    return { json: { request_id: requestId, http_status: 200, body: b, ctx } };\n  }\n\n  if (cp.__typename === 'UnauthorizedError') { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_AUTH_ERROR', cp.message || 'Buffer unauthorized.'), ctx } }; }\n  if (NOT_FOUND_TYPES.includes(cp.__typename)) { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_BAD_REQUEST', 'Buffer: ' + (cp.message || 'channel not found') + '. Re-check buffer_profile_id for channel \"' + pc.channel_id + '\".'), ctx } }; }\n  if (BAD_INPUT_TYPES.includes(cp.__typename)) {\n      // Buffer rejects unreadable assets at creation time with a message that\n      // names the media problem. Surface it as such rather than a generic 400.\n      const reason = String(cp.message || 'invalid input');\n      const mediaProblem = /image|media|url|could not be read/i.test(reason);\n      ctx.route = 'ERROR';\n      return { json: { ...errorResult(mediaProblem ? 'MEDIA_NOT_ACCESSIBLE' : 'BUFFER_BAD_REQUEST', mediaProblem ? reason : 'Buffer rejected the content: ' + reason), ctx } };\n    }\n  if (cp.__typename === 'LimitReachedError') { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_BAD_REQUEST', 'Buffer: ' + (cp.message || 'posting or queue limit reached')), ctx } }; }\n  if (RETRYABLE_TYPES.includes(cp.__typename)) { ctx.route = 'RETRY'; return { json: { ...errorResult('BUFFER_SERVER_ERROR', 'Buffer: ' + (cp.message || 'temporary server error')), ctx, graphql_body: src.graphql_body } }; }\n  if (typeof cp.message === 'string') { ctx.route = 'ERROR'; return { json: { ...errorResult('BUFFER_BAD_REQUEST', 'Buffer: ' + cp.message), ctx } }; }\n  ctx.route = 'ERROR';\n  return { json: { ...errorResult('UNKNOWN_ERROR', 'Buffer returned an unrecognised result type: ' + cp.__typename), ctx } };\n});"
+      },
+      "id": "sma-0017-0000-4000-8000-000000000000",
+      "name": "15 - Classify Buffer Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "cond-0018-0000-4000-8000-000000000000",
+                    "leftValue": "={{ $json.ctx.route }}",
+                    "rightValue": "SUCCESS",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SUCCESS"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "cond-0019-0000-4000-8000-000000000000",
+                    "leftValue": "={{ $json.ctx.route }}",
+                    "rightValue": "RETRY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "RETRY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "cond-0020-0000-4000-8000-000000000000",
+                    "leftValue": "={{ $json.ctx.route }}",
+                    "rightValue": "ERROR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ERROR"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "sma-0021-0000-4000-8000-000000000000",
+      "name": "16 - Route - Buffer Result",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        3080,
+        -460
+      ],
+      "notes": "SUCCESS -> 20, RETRY -> 16 (bounded 5xx retry only), ERROR -> 21, extra -> 21"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.buffer.com",
+        "sendQuery": false,
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.graphql_body }}",
+        "options": {
+          "timeout": 30000,
+          "redirect": {
+            "redirect": {
+              "followRedirects": false
+            }
+          },
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "sma-0022-0000-4000-8000-000000000000",
+      "name": "17 - Buffer - Retry Post (5xx only)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        3300,
+        -240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "REPLACE_WITH_N8N_CREDENTIAL_ID",
+          "name": "Buffer API (Bearer)"
+        }
+      },
+      "retryOnFail": false,
+      "notes": "Reached only for a retryable Buffer server error (HTTP 5xx or UnexpectedError). Transport timeouts are deliberately NOT retried: Buffer has no idempotency key, so retrying an ambiguous timeout could duplicate a post. Maximum two attempts per request."
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nvar ERROR_HTTP_STATUS = {\n  INVALID_REQUEST: 400,\n  MISSING_ACCOUNT_ID: 400,\n  MISSING_CHANNEL_ID: 400,\n  MISSING_CONTENT: 400,\n  CONTENT_EMPTY: 400,\n  MEDIA_INVALID: 400,\n  INVALID_PUBLISH_MODE: 400,\n  INVALID_TIMEZONE: 400,\n  INVALID_SCHEDULE: 400,\n  SCHEDULE_IN_PAST: 400,\n  ACCOUNT_NOT_FOUND: 404,\n  CHANNEL_NOT_FOUND: 404,\n  CHANNEL_NOT_BELONG_TO_ACCOUNT: 404,\n  CHANNEL_INACTIVE: 409,\n  BUFFER_PROFILE_NOT_CONFIGURED: 409,\n  BUFFER_RATE_LIMIT: 429,\n  BUFFER_AUTH_ERROR: 502,\n  BUFFER_BAD_REQUEST: 422,\n  BUFFER_SERVER_ERROR: 502,\n  BUFFER_NETWORK_ERROR: 502,\n  UNKNOWN_ERROR: 500,\n};\nfunction statusFor(code) {\n  return ERROR_HTTP_STATUS[code] || 500;\n}\n\nconst src = $('13 - Build Buffer Payload').first().json;\nconst ctx = src.ctx || {};\nconst pc = ctx.publishing_context || {};\nconst requestId = src.request_id;\n\nreturn $input.all().map((item) => {\n  const raw = item.json || {};\n  let body = raw.body !== undefined ? raw.body : raw;\n  if (typeof body === 'string') { try { body = JSON.parse(body); } catch (e) { body = {}; } }\n  if (!body || typeof body !== 'object') body = {};\n  const status = Number(raw.statusCode !== undefined ? raw.statusCode : raw.status || 0);\n\n  const errorResult = (c, message) => {\n    logEvent({\n      node: '18', event: 'buffer_error', request_id: requestId,\n      account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n      error_code: c, http_status: status, attempt: 2,\n    });\n    ctx.steps.push('18_buffer_error');\n    ctx.route = 'ERROR';\n    return {\n      request_id: requestId,\n      http_status: statusFor(c),\n      body: {\n        success: false,\n        request_id: requestId,\n        error: { code: c, message: message },\n        errors: [{ code: c, message: message }],\n        account_id: pc.account_id || null,\n        channel_id: pc.channel_id || null,\n        platform: pc.platform || null,\n        publish_mode: ctx.publish_mode || null,\n        http_status_from_buffer: status,\n        attempts: 2,\n      },\n      ctx,\n    };\n  };\n\n  if (status === 0) return { json: errorResult('BUFFER_NETWORK_ERROR', 'Buffer could not be reached on the retry attempt.') };\n  if (status === 429) return { json: errorResult('BUFFER_RATE_LIMIT', 'Buffer rate limit exceeded on the retry attempt.') };\n  if (status === 401 || status === 403) return { json: errorResult('BUFFER_AUTH_ERROR', 'Buffer rejected the API credentials.') };\n  if (status >= 400) return { json: errorResult(status >= 500 ? 'BUFFER_SERVER_ERROR' : 'BUFFER_BAD_REQUEST', 'Buffer returned HTTP ' + status + ' on the retry attempt.') };\n\n  if (Array.isArray(body.errors) && body.errors.length) {\n    const gcode = (body.errors[0].extensions && body.errors[0].extensions.code) || 'UNKNOWN';\n    const map = {\n      UNAUTHORIZED: 'BUFFER_AUTH_ERROR', FORBIDDEN: 'BUFFER_AUTH_ERROR',\n      RATE_LIMIT_EXCEEDED: 'BUFFER_RATE_LIMIT', NOT_FOUND: 'BUFFER_BAD_REQUEST',\n      GRAPHQL_VALIDATION_FAILED: 'BUFFER_BAD_REQUEST', BAD_USER_INPUT: 'BUFFER_BAD_REQUEST',\n    };\n    return { json: errorResult(map[gcode] || 'BUFFER_SERVER_ERROR', 'Buffer API error [' + gcode + ']: ' + body.errors[0].message) };\n  }\n\n  const cp = body.data && body.data.createPost;\n  if (cp && cp.__typename === 'PostActionSuccess' && cp.post) {\n    const post = cp.post;\n    logEvent({\n      node: '18', event: 'buffer_success_after_retry', request_id: requestId,\n      account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n      buffer_publication_id: post.id, status: post.status, attempt: 2,\n    });\n    ctx.steps.push('18_buffer_success_after_retry');\n    ctx.route = 'SUCCESS';\n    const b = {\n      success: true,\n      request_id: requestId,\n      status: ctx.publish_mode === 'NOW' ? 'published' : 'scheduled',\n      account_id: pc.account_id,\n      channel_id: pc.channel_id,\n      platform: pc.platform,\n      buffer_publication_id: post.id,\n      buffer_status: post.status || null,\n      attempts: 2,\n    };\n    if (ctx.publish_mode === 'SCHEDULE') {\n      b.scheduled_at = ctx.scheduled_at_raw;\n      b.timezone = ctx.timezone;\n      b.buffer_due_at_utc = ctx.buffer_due_at;\n    } else {\n      b.external_link = post.externalLink || null;\n    }\n    return { json: { request_id: requestId, http_status: 200, body: b, ctx } };\n  }\n  return { json: errorResult('BUFFER_SERVER_ERROR', 'Buffer retry did not succeed: ' + ((cp && cp.message) || 'unrecognised response')) };\n});"
+      },
+      "id": "sma-0023-0000-4000-8000-000000000000",
+      "name": "18 - Classify Retry Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3520,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "cond-0024-0000-4000-8000-000000000000",
+              "leftValue": "={{ $json.ctx.route }}",
+              "rightValue": "SUCCESS",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "sma-0025-0000-4000-8000-000000000000",
+      "name": "19 - Route - Retry Result",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        3740,
+        -240
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "\n// ---- request id (ULID, no crypto dependency) -------------------------\nconst CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';\nfunction makeUlid(now) {\n  let t = now, ts = '';\n  for (let i = 9; i >= 0; i--) { ts = CROCKFORD[t % 32] + ts; t = Math.floor(t / 32); }\n  // 80 bits of randomness -> 16 Crockford base32 characters\n  let bits = '';\n  while (bits.length < 80) bits += Math.floor(Math.random() * 2).toString(2);\n  let rand = '';\n  for (let i = 0; i < 80; i += 5) rand += CROCKFORD[parseInt(bits.slice(i, i + 5), 2)];\n  return ts + rand;\n}\nfunction logEvent(fields) {\n  console.log(JSON.stringify(Object.assign({ ts: new Date().toISOString() }, fields)));\n}\n\nvar ERROR_HTTP_STATUS = {\n  INVALID_REQUEST: 400,\n  MISSING_ACCOUNT_ID: 400,\n  MISSING_CHANNEL_ID: 400,\n  MISSING_CONTENT: 400,\n  CONTENT_EMPTY: 400,\n  MEDIA_INVALID: 400,\n  INVALID_PUBLISH_MODE: 400,\n  INVALID_TIMEZONE: 400,\n  INVALID_SCHEDULE: 400,\n  SCHEDULE_IN_PAST: 400,\n  ACCOUNT_NOT_FOUND: 404,\n  CHANNEL_NOT_FOUND: 404,\n  CHANNEL_NOT_BELONG_TO_ACCOUNT: 404,\n  CHANNEL_INACTIVE: 409,\n  BUFFER_PROFILE_NOT_CONFIGURED: 409,\n  BUFFER_RATE_LIMIT: 429,\n  BUFFER_AUTH_ERROR: 502,\n  BUFFER_BAD_REQUEST: 422,\n  BUFFER_SERVER_ERROR: 502,\n  BUFFER_NETWORK_ERROR: 502,\n  UNKNOWN_ERROR: 500,\n};\nfunction statusFor(code) {\n  return ERROR_HTTP_STATUS[code] || 500;\n}\n\n// Fires only when the HTTP node itself failed (DNS, TLS, refused, timeout).\nconst src = $('13 - Build Buffer Payload').first().json;\nconst ctx = src.ctx || {};\nconst pc = ctx.publishing_context || {};\nconst errItem = $input.first() ? $input.first().json : {};\nconst detail = errItem.error || errItem.message || 'The Buffer API could not be reached.';\n\nlogEvent({\n  node: '20', event: 'buffer_network_error', request_id: src.request_id,\n  account_id: pc.account_id, channel_id: pc.channel_id, platform: pc.platform,\n  error_code: 'BUFFER_NETWORK_ERROR',\n});\n\nreturn [{\n  json: {\n    request_id: src.request_id,\n    http_status: statusFor('BUFFER_NETWORK_ERROR'),\n    body: {\n      success: false,\n      request_id: src.request_id,\n      error: { code: 'BUFFER_NETWORK_ERROR', message: detail },\n      errors: [{ code: 'BUFFER_NETWORK_ERROR', message: detail }],\n      account_id: pc.account_id || null,\n      channel_id: pc.channel_id || null,\n      platform: pc.platform || null,\n      publish_mode: ctx.publish_mode || null,\n      retry_safe: false,\n      note: 'Not retried automatically: Buffer has no idempotency key, so retrying after an ambiguous transport failure could duplicate the post. Check Buffer for this request_id before resubmitting.',\n    },\n  },\n}];"
+      },
+      "id": "sma-0026-0000-4000-8000-000000000000",
+      "name": "20 - Handle Buffer Network Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3960,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "sma-0027-0000-4000-8000-000000000000",
+      "name": "21 - Respond - Success",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4180,
+        -460
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "sma-0028-0000-4000-8000-000000000000",
+      "name": "22 - Respond - Error",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        4180,
+        240
+      ]
+    }
+  ],
+  "connections": {
+    "01 - Webhook - Publish Request": {
+      "main": [
+        [
+          {
+            "node": "02 - Generate Request ID",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "02 - Generate Request ID": {
+      "main": [
+        [
+          {
+            "node": "03 - Validate Request Contract",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "03 - Validate Request Contract": {
+      "main": [
+        [
+          {
+            "node": "04 - Load Account Configuration",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "04 - Load Account Configuration": {
+      "main": [
+        [
+          {
+            "node": "05 - Resolve Account and Channel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "05 - Resolve Account and Channel": {
+      "main": [
+        [
+          {
+            "node": "06 - Validate Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "06 - Validate Content": {
+      "main": [
+        [
+          {
+            "node": "07 - Validate Media",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "07 - Validate Media": {
+      "main": [
+        [
+          {
+            "node": "08 - Validate Publish Mode and Schedule",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "08 - Validate Publish Mode and Schedule": {
+      "main": [
+        [
+          {
+            "node": "09 - Mark Validation Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "09 - Mark Validation Result": {
+      "main": [
+        [
+          {
+            "node": "10 - Route - Validation Gate",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "10 - Route - Validation Gate": {
+      "main": [
+        [
+          {
+            "node": "12 - Normalize Schedule to UTC",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "11 - Build Validation Error Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "11 - Build Validation Error Response": {
+      "main": [
+        [
+          {
+            "node": "22 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "12 - Normalize Schedule to UTC": {
+      "main": [
+        [
+          {
+            "node": "13 - Build Buffer Payload",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "13 - Build Buffer Payload": {
+      "main": [
+        [
+          {
+            "node": "14 - Buffer - Create Post",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "14 - Buffer - Create Post": {
+      "main": [
+        [
+          {
+            "node": "15 - Classify Buffer Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "20 - Handle Buffer Network Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "15 - Classify Buffer Response": {
+      "main": [
+        [
+          {
+            "node": "16 - Route - Buffer Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "16 - Route - Buffer Result": {
+      "main": [
+        [
+          {
+            "node": "21 - Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "17 - Buffer - Retry Post (5xx only)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "22 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "22 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "17 - Buffer - Retry Post (5xx only)": {
+      "main": [
+        [
+          {
+            "node": "18 - Classify Retry Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "20 - Handle Buffer Network Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "18 - Classify Retry Response": {
+      "main": [
+        [
+          {
+            "node": "19 - Route - Retry Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "19 - Route - Retry Result": {
+      "main": [
+        [
+          {
+            "node": "21 - Respond - Success",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "22 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "20 - Handle Buffer Network Error": {
+      "main": [
+        [
+          {
+            "node": "22 - Respond - Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {}
+}

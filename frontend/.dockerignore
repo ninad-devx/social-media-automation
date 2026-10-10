@@ -1,0 +1,38 @@
+# ==========================================================================
+# Keeps the build context small and free of local configuration.
+#
+# frontend/Dockerfile runs `npm ci` from package*.json and then `COPY . .`.
+# Anything not listed here ends up in the build stage.
+# ==========================================================================
+
+# ---- secrets / local config ------------------------------------------------
+# VITE_* values are inlined into the browser bundle at build time and are passed
+# explicitly as build ARGs. A local .env must never silently override them.
+.env
+.env.*
+!.env.example
+
+# ---- dependencies ----------------------------------------------------------
+# Rendered by `npm ci` inside the image. Copying the host copy breaks the cache
+# and can carry platform-specific binaries.
+node_modules/
+
+# ---- build output ----------------------------------------------------------
+dist/
+build/
+.vite/
+
+# ---- caches and noise ------------------------------------------------------
+__pycache__/
+*.log
+npm-debug.log*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- tooling ---------------------------------------------------------------
+.dockerignore
+.git/
+.gitignore
+*.md

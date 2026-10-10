@@ -1,0 +1,73 @@
+# ==========================================================================
+# Reverse proxy / TLS termination.
+#
+# Caddy obtains and renews certificates automatically. Only this container
+# publishes ports, so the database, the backend and the n8n admin UI are never
+# directly exposed to the internet.
+# ==========================================================================
+
+{
+	email {$ACME_EMAIL:admin@example.com}
+}
+
+# ---- Frontend -----------------------------------------------------------
+{$SITE_ADDRESS} {
+	encode gzip
+
+	# The SPA handles its own routing, so unknown paths fall through to it.
+	handle {
+		reverse_proxy frontend:80
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		# The app loads no third-party scripts.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https:; frame-ancestors 'none'"
+		-Server
+	}
+}
+
+# ---- API ----------------------------------------------------------------
+{$API_ADDRESS} {
+	encode gzip
+
+	# Uploads can be large.
+	request_body {
+		max_size 30MB
+	}
+
+	# A publish can wait on n8n and then on Buffer.
+	reverse_proxy backend:8000 {
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+}
+
+# ---- n8n ----------------------------------------------------------------
+{$N8N_ADDRESS} {
+	encode gzip
+
+	reverse_proxy n8n:5678 {
+		websocket
+		transport http {
+			read_timeout 300s
+		}
+	}
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+}
