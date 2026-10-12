@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -92,6 +92,29 @@ def update_channel(channel_id: str, payload: ChannelUpdate, db: DbDep) -> Channe
     db.commit()
     db.refresh(channel)
     return ChannelDetail(**account_service.channel_summary(channel))
+
+
+@router.delete(
+    "/channels/{channel_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    dependencies=[ApiKeyDep],
+)
+def delete_channel(channel_id: str, db: DbDep) -> Response:
+    """Delete a channel that is no longer wanted.
+
+    Disconnecting an integration only marks its channels `disconnected`, so the
+    rows survive by design. This is the way to actually remove one, whether it
+    is a leftover from a deleted integration, a duplicate, or a seed row.
+    """
+    from app.models.entities import Channel
+
+    channel = db.get(Channel, channel_id)
+    if channel is None:
+        raise AppError(ErrorCode.CHANNEL_NOT_FOUND, 404, field="channel_id")
+
+    account_service.delete_channel(db, channel)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(

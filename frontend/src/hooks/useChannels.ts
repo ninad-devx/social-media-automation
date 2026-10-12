@@ -12,6 +12,33 @@ interface ChannelsState {
 const EMPTY: ChannelsState = { channels: [], loading: false, error: null };
 
 /**
+ * Signal that the channel list changed on the server.
+ *
+ * `useChannels` is mounted independently in four places (Dashboard, Quick
+ * Publish, Accounts, the selectors), and each one only refetched when the
+ * selected *account* changed. Importing a channel in Settings therefore left
+ * every other screen showing the old list until a manual reload, which read as
+ * "the link did not work" even though the backend had it all along.
+ *
+ * The mutation that knows about the change calls `notifyChannelsChanged()` and
+ * every mounted consumer refetches. Deliberately a plain subscription: the app
+ * has no cache library, and a channel list is small enough that refetching is
+ * cheaper than maintaining one.
+ */
+const listeners = new Set<() => void>();
+
+export function notifyChannelsChanged(): void {
+  listeners.forEach((listener) => listener());
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/**
  * Loads channels for the selected account.
  *
  * This is the whole "account -> channel" relationship. There is no per-account
@@ -20,6 +47,9 @@ const EMPTY: ChannelsState = { channels: [], loading: false, error: null };
 export function useChannels(accountId: string | null) {
   const [state, setState] = useState<ChannelsState>(EMPTY);
   const requestRef = useRef(0);
+  const [reloadToken, setReloadToken] = useState(0);
+
+  useEffect(() => subscribe(() => setReloadToken((n) => n + 1)), []);
 
   useEffect(() => {
     if (!accountId) {
@@ -49,7 +79,7 @@ export function useChannels(accountId: string | null) {
       });
 
     return () => controller.abort();
-  }, [accountId]);
+  }, [accountId, reloadToken]);
 
   return state;
 }

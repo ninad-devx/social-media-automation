@@ -267,6 +267,22 @@ def update_account(db: Session, account: Account, payload: "AccountUpdate") -> A
     return account
 
 
+def delete_channel(db: Session, channel: Channel) -> None:
+    """Remove a single channel.
+
+    Channels arrive from three places that nobody can undo from the UI:
+    Buffer discovery, the manual bind form, and the legacy seed rows. A channel
+    that is no longer wanted has to be removable, otherwise it sits in every
+    brand's selector forever.
+
+    Only `publish_logs` carries a channel id and it is deliberately left
+    alone: it is history of what was attempted, not a live reference, and
+    there is no foreign key to satisfy.
+    """
+    db.delete(channel)
+    db.commit()
+
+
 def delete_account(db: Session, account: Account) -> None:
     """Remove a brand.
 

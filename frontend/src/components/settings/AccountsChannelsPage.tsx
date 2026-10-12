@@ -13,6 +13,7 @@ import { ChannelStatusBadge } from "../../components/settings/StatusBadge";
 import { ApiError } from "../../services/api";
 import { accountsApi } from "../../services/accounts";
 import { channelsAdminApi } from "../../services/integrations";
+import { notifyChannelsChanged } from "../../hooks/useChannels";
 import type { Account } from "../../types/account";
 import type { Channel } from "../../types/channel";
 
@@ -93,12 +94,33 @@ export function AccountsChannelsPage() {
     }
   };
 
+  const removeChannel = async (channel: Channel) => {
+    const warning = channel.publishable
+      ? `"${channel.display_name}" is currently connected and publishable. Deleting it removes it from every selector.`
+      : `"${channel.display_name}" is not publishable, so deleting it just cleans up the list.`;
+    if (!window.confirm(`${warning}\n\nThis cannot be undone.`)) return;
+
+    setBusy(channel.id);
+    setBanner(null);
+    try {
+      await channelsAdminApi.remove(channel.id);
+      setBanner({ tone: "success", message: `Deleted "${channel.display_name}".` });
+      notifyChannelsChanged();
+      await load();
+    } catch (err) {
+      setBanner({ tone: "danger", message: err instanceof ApiError ? err.message : "Delete failed." });
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const refresh = async (channel: Channel) => {
     setBusy(channel.id);
     setBanner(null);
     try {
       await channelsAdminApi.refresh(channel.id);
       setBanner({ tone: "success", message: `Refreshed "${channel.display_name}" from Buffer.` });
+      notifyChannelsChanged();
       await load();
     } catch (err) {
       setBanner({
@@ -190,6 +212,7 @@ export function AccountsChannelsPage() {
         tone: "success",
         message: "Channel linked. It is now selectable in Quick Publisher and AI Automation.",
       });
+      notifyChannelsChanged();
       await load();
     } catch (err) {
       setBindError(err instanceof ApiError ? err.message : "Could not link the channel.");
@@ -362,6 +385,9 @@ export function AccountsChannelsPage() {
                         )}
                         <Button size="sm" variant="ghost" onClick={() => toggleActive(channel)} loading={busy === channel.id}>
                           {channel.active ? "Disable" : "Enable"}
+                        </Button>
+                        <Button size="sm" variant="danger" onClick={() => removeChannel(channel)} loading={busy === channel.id}>
+                          Delete
                         </Button>
                       </td>
                     </tr>

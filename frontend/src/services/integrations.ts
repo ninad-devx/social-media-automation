@@ -81,4 +81,13 @@ export const channelsAdminApi = {
     display_name?: string;
     username?: string;
   }) => api.post<unknown>("/api/channels/bind", body),
+
+  /**
+   * Delete a channel outright.
+   *
+   * Disconnecting an integration only marks its channels disconnected, so the
+   * rows survive by design. This removes one for good - used for leftovers
+   * from a deleted integration, duplicates, and the legacy seed rows.
+   */
+  remove: (id: string) => api.del<void>(`/api/channels/${encodeURIComponent(id)}`),
 };
