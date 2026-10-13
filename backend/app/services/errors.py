@@ -33,6 +33,10 @@ class ErrorCode:
     CHANNEL_NOT_BELONG_TO_ACCOUNT = "CHANNEL_NOT_BELONG_TO_ACCOUNT"
     CHANNEL_INACTIVE = "CHANNEL_INACTIVE"
 
+    # --- publishing history --------------------------------------------------
+    HISTORY_ENTRY_NOT_FOUND = "HISTORY_ENTRY_NOT_FOUND"
+    HISTORY_CLEAR_REQUIRES_FILTER = "HISTORY_CLEAR_REQUIRES_FILTER"
+
     # --- publishing engine -------------------------------------------------
     PUBLISHING_UNAVAILABLE = "PUBLISHING_UNAVAILABLE"
     PUBLISHING_TIMEOUT = "PUBLISHING_TIMEOUT"
@@ -145,6 +149,11 @@ USER_MESSAGES: dict[str, str] = {
     ErrorCode.CHANNEL_NOT_FOUND: "This social channel is currently unavailable.",
     ErrorCode.CHANNEL_NOT_BELONG_TO_ACCOUNT: "That channel doesn't belong to the selected account.",
     ErrorCode.CHANNEL_INACTIVE: "This social channel is currently unavailable.",
+    ErrorCode.HISTORY_ENTRY_NOT_FOUND: "That history entry no longer exists.",
+    ErrorCode.HISTORY_CLEAR_REQUIRES_FILTER: (
+        "Narrow this down first: filter by brand, channel, status, platform or date. "
+        "Deleting every history row is not something one click can do."
+    ),
     ErrorCode.PUBLISHING_UNAVAILABLE: "Publishing is temporarily unavailable. Please try again in a moment.",
     ErrorCode.PUBLISHING_TIMEOUT: "Publishing took longer than expected and we couldn't confirm the result. Check Buffer before retrying so you don't post twice.",
     ErrorCode.PUBLISHING_FAILED: "We couldn't publish your post right now. Please try again.",

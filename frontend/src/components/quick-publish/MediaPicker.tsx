@@ -15,6 +15,7 @@ interface Pending {
   name: string;
   percent: number;
   previewUrl: string;
+  isVideo: boolean;
 }
 
 /**
@@ -133,9 +134,12 @@ export function MediaPicker({
       }
 
       const id = `${file.name}-${file.size}-${file.lastModified}`;
-      const previewUrl = isImage ? URL.createObjectURL(file) : "";
+      // Both kinds get an object URL. Previously only images did, so a video
+      // had no local address at any point and its thumbnail was a generic icon
+      // both during the upload and afterwards.
+      const previewUrl = URL.createObjectURL(file);
 
-      setPending((p) => [...p, { id, name: file.name, percent: 0, previewUrl }]);
+      setPending((p) => [...p, { id, name: file.name, percent: 0, previewUrl, isVideo }]);
 
       const handle = uploadMediaWithHandle(file, (progress) => {
         setPending((p) =>
@@ -326,7 +330,11 @@ export function MediaPicker({
           {pending.map((p) => (
             <li key={p.id} className="media__item">
               <span className="media__thumb">
-                {p.previewUrl ? <img src={p.previewUrl} alt="" /> : <IconVideo />}
+                {p.previewUrl ? (
+                  <MediaThumb url={p.previewUrl} isVideo={p.isVideo} />
+                ) : (
+                  <IconVideo />
+                )}
               </span>
               <span className="media__meta">
                 <span className="media__name">{p.name}</span>
@@ -357,7 +365,14 @@ export function MediaPicker({
                     }
                   />
                 ) : (
-                  <IconVideo />
+                  // A frame from the video rather than a generic icon, so an
+                  // attached reel can be recognised at a glance.
+                  <video
+                    src={item.preview_url || item.url}
+                    preload="metadata"
+                    muted
+                    playsInline
+                  />
                 )}
               </span>
               <span className="media__meta">
@@ -391,7 +406,7 @@ export function MediaPicker({
       )}
 
       {requiresMedia && media.length === 0 && (
-        <p className="field__hint">This channel needs at least one image or video.</p>
+        <p className="field__hint">This format needs at least one image or video.</p>
       )}
 
       {combinedError && (
@@ -401,6 +416,20 @@ export function MediaPicker({
       )}
     </div>
   );
+}
+
+/**
+ * Thumbnail for an in-flight upload.
+ *
+ * An image renders as an `<img>` and a video as a `<video>` that has fetched
+ * just enough metadata to paint its first frame. `preload="metadata"` avoids
+ * pulling an entire video into memory for a 40px thumbnail.
+ */
+function MediaThumb({ url, isVideo }: { url: string; isVideo: boolean }) {
+  if (isVideo) {
+    return <video src={url} preload="metadata" muted playsInline />;
+  }
+  return <img src={url} alt="" />;
 }
 
 function filename(url: string): string {

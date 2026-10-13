@@ -100,4 +100,29 @@ export const publishingApi = {
    */
   duplicateHistory: (signal?: AbortSignal) =>
     api.get<DuplicateReport>("/api/publish/history/duplicates", signal),
+
+  /**
+   * Remove one history row.
+   *
+   * Local only. This deletes this app's record of an attempt; it does not
+   * delete, edit or cancel the post on Buffer. The backend sends nothing to the
+   * publishing engine from this call.
+   */
+  deleteHistoryEntry: (id: number) => api.del<void>(`/api/publish/history/${id}`),
+
+  /**
+   * Bulk-remove history.
+   *
+   * The backend refuses an unscoped call, so at least one filter is required.
+   * That is why the parameters have no "all" default.
+   */
+  clearHistory: (params: Omit<HistoryParams, "limit" | "offset">) => {
+    const query = qs({
+      account_id: params.accountId,
+      channel_id: params.channelId,
+      status: params.status,
+      platform: params.platform,
+    });
+    return api.del<{ deleted: number }>(`/api/publish/history${query}`);
+  },
 };

@@ -164,6 +164,15 @@ class CampaignPost(TimestampMixin, Base):
     # pipeline is reused rather than duplicated.
     media_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # The format the author chose in Quick Publish (reel, story, carousel).
+    #
+    # Kept here rather than only on the publish log because a campaign post is
+    # edited and republished long after it is created. Without it, the format
+    # chosen at draft time was lost and the post fell back to a plain feed post.
+    # Null means "use the platform default", which is what every row written
+    # before this column existed means.
+    post_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
     # pending | generating | generated | failed | skipped
     generation_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     # draft | published | scheduled | failed

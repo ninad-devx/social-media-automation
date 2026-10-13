@@ -1013,6 +1013,8 @@ function PostCard({
 
   };
 
+  const mediaRequired = Boolean(caps?.requires_media);
+
   const canPublish =
 
     !locked &&
@@ -1021,7 +1023,28 @@ function PostCard({
 
     post.effective_content.trim().length > 0 &&
 
-    (!caps?.requires_media || post.media.length > 0);
+    (!mediaRequired || post.media.length > 0);
+
+  // Why the Publish button is not there.
+  //
+  // The previous version explained only the media case. Every other reason - a
+  // channel Buffer has locked, a post already published, blank copy - removed
+  // the button and said nothing at all, which reads as a broken screen rather
+  // than a deliberate block.
+  const blockedReason = ((): string | null => {
+    if (canPublish) return null;
+    if (locked) return `${meta.label} has this channel locked, so Buffer cannot post to it.`;
+    if (post.publishing_status === "published")
+      return "This post already went out. Its copy is the record of what was sent.";
+    if (post.publishing_status === "scheduled")
+      return "This post is already scheduled. Check the Posts page for its status.";
+    if (post.publishing_status === "failed")
+      return "The last attempt failed. Edit it and publish again to try once more.";
+    if (!post.effective_content.trim()) return "This post has no text yet.";
+    if (mediaRequired && post.media.length === 0)
+      return `${meta.label} needs an image before it can publish.`;
+    return "This post cannot be published right now.";
+  })();
 
   return (
 
@@ -1231,13 +1254,9 @@ function PostCard({
 
             ) : (
 
-              caps?.requires_media && post.media.length === 0 && (
+              blockedReason && (
 
-                <span className="muted">
-
-                  {meta.label} needs an image before it can publish.
-
-                </span>
+                <span className="muted">{blockedReason}</span>
 
               )
 

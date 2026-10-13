@@ -183,6 +183,63 @@ def platform_of(channel: Any, fallback: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Removing history (local only)
+# --------------------------------------------------------------------------- #
+def delete_history_entry(db: Session, log_id: int) -> bool:
+    """Remove one history row. Returns False when it was already gone.
+
+    Local bookkeeping only. Nothing is sent to Buffer: a row here records what
+    the application *attempted*, and deleting it does not delete, edit or cancel
+    anything on a social channel. A post that really went out stays live on
+    Buffer regardless - only this app's record of it disappears.
+
+    Called only from an explicit operator action. Nothing in the publishing path
+    deletes history, so an attempt can never erase its own record.
+    """
+    row = db.get(PublishLog, log_id)
+    if row is None:
+        return False
+    db.delete(row)
+    db.commit()
+    return True
+
+
+def clear_history(
+    db: Session,
+    *,
+    account_id: str | None = None,
+    channel_id: str | None = None,
+    status_filter: str | None = None,
+    platform: str | None = None,
+    before: datetime | None = None,
+) -> int:
+    """Delete history matching the filters. Returns how many rows went.
+
+    Requires at least one filter. An unscoped "delete everything" is too easy to
+    fire by accident from a stray click, and history is the only record this
+    application keeps of what it tried to publish.
+    """
+    stmt = select(PublishLog)
+
+    if account_id:
+        stmt = stmt.where(PublishLog.account_id == account_id)
+    if channel_id:
+        stmt = stmt.where(PublishLog.channel_id == channel_id)
+    if status_filter:
+        stmt = stmt.where(PublishLog.status == status_filter)
+    if platform:
+        stmt = stmt.where(PublishLog.platform == platform.lower())
+    if before is not None:
+        stmt = stmt.where(PublishLog.created_at < before)
+
+    rows = list(db.scalars(stmt).all())
+    for row in rows:
+        db.delete(row)
+    db.commit()
+    return len(rows)
+
+
+# --------------------------------------------------------------------------- #
 # Duplicate reporting (read-only)
 # --------------------------------------------------------------------------- #
 def duplicate_history_report(db: Session) -> list[dict[str, Any]]:

@@ -244,6 +244,14 @@ class CampaignDraftIn(BaseModel):
     content: str = Field(min_length=1)
     media: list[dict] = Field(default_factory=list)
     hashtags: list[str] = Field(default_factory=list)
+    # The format the author chose in Quick Publish - reel, story, carousel.
+    #
+    # This field was missing, and because Pydantic ignores unknown keys by
+    # default the value the frontend sent was dropped without an error. A reel
+    # composed by hand and saved as a draft campaign silently reopened as a
+    # plain feed post. Nullable on purpose: drafts created before this field
+    # existed still have to load, and mean "whatever the platform defaults to".
+    post_type: str | None = Field(default=None, max_length=32)
 
     @field_validator("content")
     @classmethod
@@ -310,6 +318,7 @@ class CampaignPostOut(BaseModel):
     media: list[dict] = Field(default_factory=list)
     model_notes: str | None = None
     validation_warnings: list[str] = Field(default_factory=list)
+    post_type: str | None = None
     is_edited: bool = False
     has_previous_version: bool = False
     scheduled_at: datetime | None = None
@@ -394,6 +403,8 @@ class PostUpdate(BaseModel):
     hashtags: list[str] | None = None
     media: list[dict] | None = None
     media_idea: str | None = None
+    # So the format can be corrected after the fact, not only at creation.
+    post_type: str | None = Field(default=None, max_length=32)
 
 
 class RegenerateRequest(BaseModel):

@@ -166,6 +166,8 @@ export interface CampaignDraft {
   content: string;
   media?: Array<{ type?: string; url?: string; alt_text?: string | null }>;
   hashtags?: string[];
+  /** Sent so the backend stores it; it was being dropped before. */
+  post_type?: string | null;
 }
 
 export interface CampaignPayload {
@@ -204,7 +206,9 @@ export interface CampaignPost {
   media_idea: string | null;
   media: Array<{ type?: string; url?: string; alt_text?: string }>;
   model_notes: string | null;
-  validation_warnings: string[];
+validation_warnings: string[];
+  /** The format chosen in Quick Publish (reel, story, carousel). Null = platform default. */
+  post_type?: string | null;
   is_edited: boolean;
   has_previous_version: boolean;
   scheduled_at: string | null;

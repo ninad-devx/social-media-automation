@@ -34,6 +34,10 @@ export function CalendarPage() {
             platform: item.platform,
             channel_id: item.channel_id,
             account_id: item.account_id,
+            // Carried through. The row renders `account_name ?? account_id`, and
+            // this was never populated, so the calendar showed the raw brand id
+            // ("company") on every entry while the rest of the app showed "Company".
+            account_name: item.account_name ?? null,
             time: formatInZone(item.scheduled_at, item.timezone, "HH:mm"),
             timezone: item.timezone,
           });
@@ -123,8 +127,9 @@ export function CalendarPage() {
 
       {accounts && accounts.length > 0 && (
         <p className="page__footnote">
-          Scheduling is delegated to the publishing engine — n8n returns immediately and
-          Buffer handles the actual delivery time.
+          Scheduling is delegated: your post is handed to Buffer with a due time and Buffer
+          publishes it. This app has no scheduler of its own and does not watch for the
+          delivery, so an entry stays marked &ldquo;scheduled&rdquo; until Buffer acts on it.
         </p>
       )}
     </div>
@@ -145,6 +150,14 @@ interface ScheduledItem {
 function formatDayHeading(isoDay: string): string {
   const [y, m, d] = isoDay.split("-").map(Number);
   const date = new Date(Date.UTC(y, m - 1, d));
+
+  // "Today" is judged in the viewer's own timezone.
+  //
+  // Grouping above is done in each post's own timezone, so a post at 01:00 in
+  // Dhaka is grouped under that date. Judging "today" in the browser's zone
+  // while grouping in the post's zone put genuinely-today posts under a plain
+  // date heading whenever the two zones disagreed. Both sides now use the
+  // browser's zone, which is the only one the viewer can reason about.
   const today = new Date();
   const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(
     today.getDate(),
@@ -156,6 +169,12 @@ function formatDayHeading(isoDay: string): string {
     tomorrow.getDate(),
   ).padStart(2, "0")}`;
   if (isoDay === tKey) return "Tomorrow";
+
+  const yesterday = new Date(today.getTime() - 86400000);
+  const yKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(
+    yesterday.getDate(),
+  ).padStart(2, "0")}`;
+  if (isoDay === yKey) return "Yesterday";
 
   return date.toLocaleDateString(undefined, {
     weekday: "long",

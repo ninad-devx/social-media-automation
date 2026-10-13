@@ -89,14 +89,6 @@ export function QuickPublishPage() {
   const channelUsable = Boolean(channel?.publishable);
   const channelBlockReason = channelHealth?.detail ?? null;
 
-  // Media rules come from the capability endpoint, so they cannot drift from
-  // what the API will accept.
-  const requiredMedia = capability?.requires_media ?? false;
-  const maxAssets = resolveMaxAssets(capability, postType);
-  const mediaValid = media.length > 0 || !requiredMedia;
-  const mediaCountValid = maxAssets === null || media.length <= maxAssets;
-  const textValid = capability?.text_limit == null || trimmedLength <= capability.text_limit;
-
   const postTypeSupported =
     postType === null ||
     capability === null ||
@@ -106,6 +98,26 @@ export function QuickPublishPage() {
     ? (capability?.post_types.find((t) => t.key === postType) ?? null)
     : null;
   const scheduleOnly = Boolean(postTypeSpec?.requires_schedule);
+
+  // Media rules come from the capability endpoint, so they cannot drift from
+  // what the API will accept.
+  //
+  // "Required" is the greater of what the platform demands and what the chosen
+  // format demands. Reading only `capability.requires_media` let Facebook Reel
+  // and Story, and Twitter Video, be submitted with no media at all: the
+  // platform flag is false because a plain feed post can be text-only, so the
+  // per-format `min_assets` was invisible here and the backend rejected the
+  // attempt only after the whole form had been filled in.
+  const requiredMedia =
+    Boolean(capability?.requires_media) || Boolean(postTypeSpec?.min_assets);
+  const minAssets = Math.max(
+    capability?.requires_media ? 1 : 0,
+    postTypeSpec?.min_assets ?? 0,
+  );
+  const maxAssets = resolveMaxAssets(capability, postType);
+  const mediaValid = media.length >= minAssets;
+  const mediaCountValid = maxAssets === null || media.length <= maxAssets;
+  const textValid = capability?.text_limit == null || trimmedLength <= capability.text_limit;
 
   // A type that requires scheduling cannot be shared immediately.
   useEffect(() => {
@@ -503,6 +515,9 @@ export function QuickPublishPage() {
                     textValid,
                     scheduleValid,
                     requiredMedia,
+                    minAssets,
+                    postTypeAllowsVideo: Boolean(postTypeSpec?.allows_video),
+                    postTypeAllowsImage: Boolean(postTypeSpec?.allows_image),
                     publishMode,
                     channelUsable,
                     channelBlockReason,
@@ -626,6 +641,9 @@ function blockerReason(s: {
   textValid: boolean;
   scheduleValid: boolean;
   requiredMedia: boolean;
+  minAssets: number;
+  postTypeAllowsVideo: boolean;
+  postTypeAllowsImage: boolean;
   publishMode: PublishMode;
   channelUsable: boolean;
   channelBlockReason: string | null;
@@ -641,7 +659,15 @@ function blockerReason(s: {
   if (!s.textValid) return "Shorten the post to fit this channel's character limit.";
   if (!s.mediaValid)
     return s.requiredMedia
-      ? "This channel needs at least one image or video."
+      ? s.minAssets > 1
+        ? `This format needs at least ${s.minAssets} attachments. You have ${s.mediaCount}.`
+        : `${s.postTypeLabel ?? "This format"} needs ${
+            s.postTypeAllowsVideo && !s.postTypeAllowsImage
+              ? "a video"
+              : s.postTypeLabel === "Story" || s.postTypeLabel === "Reel"
+                ? "a video"
+                : "an image or video"
+          } before it can be published.`
       : null;
   if (!s.mediaCountValid)
     return s.maxAssets === null

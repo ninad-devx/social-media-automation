@@ -16,7 +16,14 @@ const INITIAL: PublishState = { publishing: false, result: null, error: null };
  *
  * Two layers of protection:
  *  1. the button is disabled while `publishing` is true (UI)
- *  2. a stable Idempotency-Key is reused for retries of the same attempt (API)
+ *  2. a stable Idempotency-Key is reused for retries of the *same* attempt (API)
+ *
+ * The key is also rotated as soon as an attempt settles. That matters because
+ * the backend treats a completed key as final and refuses it when the payload
+ * has changed: without the rotation, publishing once, editing the media and
+ * clicking Publish again sent the original key with a different body and came
+ * back as `IDEMPOTENCY_KEY_REUSED`, which looks like a server fault rather than
+ * a second, genuinely different post.
  */
 export function usePublish(onSuccess?: (result: PublishResponse) => void) {
   const [state, setState] = useState<PublishState>(INITIAL);
@@ -38,6 +45,9 @@ export function usePublish(onSuccess?: (result: PublishResponse) => void) {
 
       try {
         const result = await publishingApi.publish(payload, keyRef.current);
+        // The attempt is done, so this key must never be reused for a
+        // different post. A retry path re-mints its own key explicitly.
+        keyRef.current = newIdempotencyKey();
         setState({ publishing: false, result, error: null });
         // The callback runs outside the try on purpose. It used to sit inside,
         // so a throwing handler turned a successful publish into a reported

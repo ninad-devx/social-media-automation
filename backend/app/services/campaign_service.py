@@ -244,6 +244,12 @@ class CampaignService:
                     post.hashtags = json.dumps(
                         [str(t).lstrip("#").strip() for t in draft["hashtags"] if str(t).strip()]
                     )
+                # Carried through from Quick Publish. Previously this key was
+                # accepted by nothing and dropped by Pydantic, so the format
+                # silently reverted to the platform default.
+                post_type = (draft.get("post_type") or "").strip() or None
+                if post_type:
+                    post.post_type = post_type
 
         self._db.commit()
 
@@ -806,6 +812,11 @@ class CampaignService:
 
         if "media_idea" in data and data["media_idea"] is not None:
             post.media_idea = str(data["media_idea"]).strip() or None
+
+        if "post_type" in data:
+            # Blank clears it back to "whatever the platform defaults to",
+            # which is a legitimate choice rather than an error.
+            post.post_type = (str(data["post_type"] or "").strip() or None)
 
         self._db.commit()
         return post

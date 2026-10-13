@@ -67,6 +67,11 @@ social_media.db
 /media/
 /backend/media/
 
+# The publishing safety guard's audit log. It records every attempted Buffer
+# call and its target, so it is a local artefact - useful while debugging, never
+# something to commit.
+publishing-guard.jsonl
+
 # Stray copies of files that may carry credentials.
 *.bak
 *.orig

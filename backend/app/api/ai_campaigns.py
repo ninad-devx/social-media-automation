@@ -98,7 +98,8 @@ def _post_out(post: CampaignPost, db: DbDep) -> CampaignPostOut:
         media_idea=post.media_idea,
         media=media,
         model_notes=post.model_notes,
-        validation_warnings=_json_list(post.validation_warnings),
+validation_warnings=_json_list(post.validation_warnings),
+        post_type=post.post_type,
         is_edited=post.is_edited,
         has_previous_version=bool(post.previous_content),
         scheduled_at=post.scheduled_at,
@@ -420,6 +421,10 @@ def _build_publish_request(post: CampaignPost, campaign: Campaign, *, when: date
         campaign_id=campaign.id,
         ai_generated=True,
         content_id=post.id,
+        # The format chosen when the draft was authored. Without this the whole
+        # column was inert: a reel saved as a campaign draft reached Buffer as
+        # a plain feed post.
+        post_type=post.post_type,
     )
 
 

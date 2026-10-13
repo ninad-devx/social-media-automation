@@ -4,7 +4,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Annotated
 
-from fastapi import APIRouter, Header, Query
+from fastapi import APIRouter, Header, Query, Response
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.api.deps import ApiKeyDep, DbDep, N8nDep
@@ -163,6 +164,75 @@ def publish_history(
     return PublishLogPage(
         items=_with_names(db, rows), total=total, limit=limit, offset=offset
     )
+
+
+@router.delete("/publish/history/{log_id}", status_code=204, dependencies=[ApiKeyDep])
+def delete_history_entry(log_id: int, db: DbDep) -> Response:
+    """Remove a single history row.
+
+    Local bookkeeping only. This deletes this application's record of an
+    attempt; it does not delete, edit or cancel the post on Buffer. Nothing in
+    the publishing path calls this, so an attempt can never erase its own row.
+    """
+    from app.services.errors import AppError, ErrorCode
+    from app.services.publish_history import delete_history_entry as _delete
+
+    if not _delete(db, log_id):
+        raise AppError(ErrorCode.HISTORY_ENTRY_NOT_FOUND, 404, field="log_id")
+
+    logger.info(
+        "publish.history_deleted",
+        extra={"context": {"log_id": log_id}},
+    )
+    return Response(status_code=204)
+
+
+class HistoryClearOut(BaseModel):
+    deleted: int
+
+
+@router.delete("/publish/history", response_model=HistoryClearOut, dependencies=[ApiKeyDep])
+def clear_publish_history(
+    db: DbDep,
+    account_id: Annotated[str | None, Query()] = None,
+    channel_id: Annotated[str | None, Query()] = None,
+    status_filter: Annotated[str | None, Query(alias="status")] = None,
+    platform: Annotated[str | None, Query(max_length=32)] = None,
+    before: Annotated[datetime | None, Query()] = None,
+) -> HistoryClearOut:
+    """Bulk-remove history. Requires at least one filter.
+
+    Refusing an unscoped delete is deliberate: history is the only record this
+    application keeps of what it tried to publish, and a stray request should
+    not be able to wipe it.
+    """
+    from app.services.errors import AppError, ErrorCode
+    from app.services.publish_history import clear_history
+
+    if not any([account_id, channel_id, status_filter, platform, before]):
+        raise AppError(ErrorCode.HISTORY_CLEAR_REQUIRES_FILTER, 400, field="filter")
+
+    deleted = clear_history(
+        db,
+        account_id=account_id,
+        channel_id=channel_id,
+        status_filter=status_filter,
+        platform=platform,
+        before=before,
+    )
+    logger.info(
+        "publish.history_cleared",
+        extra={
+            "context": {
+                "deleted": deleted,
+                "account_id": account_id,
+                "channel_id": channel_id,
+                "status": status_filter,
+                "platform": platform,
+            }
+        },
+    )
+    return HistoryClearOut(deleted=deleted)
 
 
 @router.get("/publish/history/duplicates", response_model=DuplicateHistoryReport, dependencies=[ApiKeyDep])

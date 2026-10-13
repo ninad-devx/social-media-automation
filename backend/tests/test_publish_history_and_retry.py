@@ -387,3 +387,118 @@ class TestDuplicateReport:
                 PublishLog.request_id.like("legacy_dup%")
             ).all()
         }
+
+# --------------------------------------------------------------------------- #
+# History removal - local bookkeeping only
+# --------------------------------------------------------------------------- #
+class TestHistoryRemoval:
+    def test_a_single_entry_can_be_removed(self, client, fake_n8n, bound_company_channels):
+        client.post("/api/publish", json=_payload())
+        before = client.get("/api/publish/history").json()
+        assert before["total"] >= 1
+        target = before["items"][0]["id"]
+
+        removed = client.delete(f"/api/publish/history/{target}")
+        assert removed.status_code == 204, removed.text
+
+        after = client.get("/api/publish/history").json()
+        assert target not in [i["id"] for i in after["items"]]
+        assert after["total"] == before["total"] - 1
+
+    def test_removing_an_unknown_entry_is_404(self, client):
+        r = client.delete("/api/publish/history/999999")
+        assert r.status_code == 404
+        assert r.json()["error"]["code"] == "HISTORY_ENTRY_NOT_FOUND"
+
+    def test_removing_history_sends_nothing_to_the_engine(
+        self, client, fake_n8n, bound_company_channels
+    ):
+        """The critical property: deleting history is a local bookkeeping act.
+
+        A post that really went out stays live on Buffer, so the removal must
+        not reach the publishing engine at all - not to edit it, not to delete
+        it, not even to look at it.
+        """
+        client.post("/api/publish", json=_payload())
+        sent_before = len(fake_n8n.calls)
+
+        entries = client.get("/api/publish/history").json()["items"]
+        client.delete(f"/api/publish/history/{entries[0]['id']}")
+
+        assert len(fake_n8n.calls) == sent_before, (
+            "removing a history row called the publishing engine; it must not"
+        )
+
+    def test_bulk_clear_requires_a_filter(self, client, fake_n8n, bound_company_channels):
+        client.post("/api/publish", json=_payload())
+        unscoped = client.delete("/api/publish/history")
+        assert unscoped.status_code == 400
+        assert unscoped.json()["error"]["code"] == "HISTORY_CLEAR_REQUIRES_FILTER"
+
+        # Nothing was removed by the rejected request.
+        assert client.get("/api/publish/history").json()["total"] >= 1
+
+    def test_bulk_clear_only_removes_what_the_filter_matches(
+        self, client, fake_n8n, bound_company_channels
+    ):
+        client.post("/api/publish", json=_payload(account_id="company"))
+        client.post(
+            "/api/publish",
+            json=_payload(account_id="company", content="Second post to clear"),
+        )
+        assert client.get("/api/publish/history").json()["total"] >= 2
+
+        cleared = client.delete("/api/publish/history", params={"status": "failed"})
+        assert cleared.status_code == 200, cleared.text
+
+        remaining = client.get("/api/publish/history").json()
+        # Nothing failed, so nothing was deleted.
+        assert remaining["total"] >= 2
+
+    def test_bulk_clear_by_brand_removes_only_that_brand(
+        self, client, fake_n8n, bound_company_channels, db
+    ):
+        from app.models.entities import Account, PublishLog as LogModel
+
+        client.post("/api/publish", json=_payload())
+        other = Account(id="other_brand", name="Other Brand", type="brand", active=True, sort_order=9)
+        db.add(other)
+        db.commit()
+        db.add(
+            LogModel(
+                request_id="req_other_brand_1",
+                account_id="other_brand",
+                channel_id="company_facebook",
+                platform="facebook",
+                content="Belongs to another brand",
+                content_preview="Belongs to another brand",
+                media_count=0,
+                publish_mode="NOW",
+                timezone="UTC",
+                status="published",
+                source="dashboard",
+            )
+        )
+        db.commit()
+
+        cleared = client.delete("/api/publish/history", params={"account_id": "company"})
+        assert cleared.status_code == 200, cleared.text
+        assert cleared.json()["deleted"] >= 1
+
+        survivors = client.get("/api/publish/history").json()
+        assert [i["account_id"] for i in survivors["items"]] == ["other_brand"]
+
+    def test_the_publishing_path_never_deletes_its_own_history(
+        self, client, fake_n8n, bound_company_channels
+    ):
+        """A failed publish must leave its record behind.
+
+        Otherwise a post that failed after reaching Buffer could erase the only
+        trace that it was ever attempted.
+        """
+        fake_n8n.fail(code="BUFFER_SERVER_ERROR", message="upstream exploded")
+        client.post("/api/publish", json=_payload())
+
+        history = client.get("/api/publish/history").json()
+        assert history["total"] >= 1
+        assert history["items"][0]["status"] == "failed"

@@ -68,8 +68,20 @@ function describeType(capability: PlatformCapability, type: PlatformCapability["
   else if (type.allows_image) parts.push("image");
   if (type.max_assets === 1) parts.push("1 attachment");
   else if (type.max_assets && type.max_assets > 1) parts.push(`up to ${type.max_assets}`);
-  if (capability.requires_media && type.min_assets) {
-    parts.push(`needs ${type.min_assets}+`);
+  // The format's own minimum, regardless of the platform flag.
+  //
+  // This used to be `capability.requires_media && type.min_assets`, so on
+  // Facebook - where the platform flag is false because a feed post can be
+  // text-only - a Reel and a Story advertised nothing at all, even though both
+  // reject a post with no video.
+  if (type.min_assets) {
+    parts.push(
+      type.allows_image && type.allows_video
+        ? `needs ${type.min_assets}+`
+        : `needs ${type.min_assets}+ video`,
+    );
+  } else if (capability.requires_media) {
+    parts.push("media required");
   }
   return parts.join(" · ") || null;
 }

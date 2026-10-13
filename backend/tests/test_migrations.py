@@ -343,6 +343,57 @@ def test_a_row_count_is_unchanged_by_the_migration(legacy_db: Path) -> None:
         engine.dispose()
 
 
+def test_the_campaign_post_format_column_reaches_an_existing_database(
+    legacy_db: Path,
+) -> None:
+    """`campaign_posts.post_type` has to be added to a database that already
+    exists, not only to a freshly created one.
+
+    It is nullable, which is what makes the additive reconciliation safe to run
+    against live rows: every post that predates the column keeps working, and
+    reads as "use the platform default".
+    """
+    engine = create_engine(f"sqlite:///{legacy_db}")
+    with engine.connect() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS campaign_posts"))
+        conn.execute(
+            text(
+                "CREATE TABLE campaign_posts ("
+                "id VARCHAR(64) PRIMARY KEY, campaign_id VARCHAR(64) NOT NULL, "
+                "account_id VARCHAR(64) NOT NULL, channel_id VARCHAR(64) NOT NULL, "
+                "platform VARCHAR(32) NOT NULL, timezone VARCHAR(64) NOT NULL, "
+                "generation_status VARCHAR(16) NOT NULL, publishing_status VARCHAR(16) NOT NULL, "
+                "is_edited BOOLEAN NOT NULL)"
+            )
+        )
+        conn.execute(
+            text(
+                "INSERT INTO campaign_posts (id, campaign_id, account_id, channel_id, "
+                "platform, timezone, generation_status, publishing_status, is_edited) "
+                "VALUES ('cp_1', 'cmp_1', 'company', 'company_facebook', 'facebook', "
+                "'UTC', 'generated', 'draft', 0)"
+            )
+        )
+        conn.commit()
+    engine.dispose()
+
+    _reconcile(legacy_db)
+
+    engine = create_engine(f"sqlite:///{legacy_db}")
+    try:
+        inspector = inspect(engine)
+        assert "post_type" in {c["name"] for c in inspector.get_columns("campaign_posts")}
+        with engine.connect() as conn:
+            # The existing post survives untouched, with no invented format.
+            row = conn.execute(
+                text("SELECT post_type, generation_status FROM campaign_posts WHERE id='cp_1'")
+            ).one()
+        assert row[0] is None
+        assert row[1] == "generated"
+    finally:
+        engine.dispose()
+
+
 def test_a_fresh_database_gets_everything_at_once(tmp_path: Path) -> None:
     path = tmp_path / "fresh.db"
     engine = create_engine(f"sqlite:///{path}", future=True)

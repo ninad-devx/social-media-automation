@@ -208,3 +208,102 @@ def test_generation_can_still_be_run_on_a_draft(client, fake_adapter, provider_r
     assert body["generated_count"] == 1
     # The hand-written copy is replaced by the generated one.
     assert body["posts"][0]["effective_content"] != "hand written"
+
+# --------------------------------------------------------------------------- #
+# The chosen format must survive the round trip
+# --------------------------------------------------------------------------- #
+def test_a_drafts_post_type_is_kept_not_silently_dropped(client) -> None:
+    """A reel saved from Quick Publish must still be a reel.
+
+    ``CampaignDraftIn`` had no ``post_type`` field and Pydantic ignores unknown
+    keys, so the format the author chose was discarded on the way in and the
+    post came back as a plain feed post with no warning.
+    """
+    r = _draft(
+        client,
+        [
+            {
+                "account_id": "company",
+                "channel_id": INSTAGRAM,
+                "content": "Reel copy",
+                "post_type": "reel",
+            }
+        ],
+    )
+    assert r.status_code == 201, r.text
+
+    posts = r.json()["posts"]
+    assert posts[0]["post_type"] == "reel"
+
+
+def test_a_draft_without_a_post_type_stays_null(client) -> None:
+    """Existing drafts predate the field and must still load."""
+    r = _draft(
+        client,
+        [{"account_id": "company", "channel_id": INSTAGRAM, "content": "Plain copy"}],
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["posts"][0]["post_type"] is None
+
+
+def test_a_stored_post_type_reaches_the_publish_request(client, fake_n8n) -> None:
+    """The column has to be wired all the way to Buffer, not just stored.
+
+    Storing it without forwarding it would leave the bug in place: the post
+    would look right in the UI and still go out as a plain feed post.
+    """
+    r = _draft(
+        client,
+        [
+            {
+                "account_id": "company",
+                "channel_id": INSTAGRAM,
+                "content": "Reel copy",
+                "post_type": "reel",
+            }
+        ],
+    )
+    assert r.status_code == 201, r.text
+    post_id = r.json()["posts"][0]["id"]
+
+    # Instagram reels need media, so the request carries one to get past
+    # validation. The assertion is about post_type, not the media.
+    media = [{"type": "video", "url": "https://cdn.example.com/reel.mp4"}]
+    updated = client.patch(
+        f"/api/ai/campaign-posts/{post_id}",
+        json={"media": media, "post_type": "reel"},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["post_type"] == "reel"
+
+    published = client.post(
+        f"/api/ai/campaign-posts/{post_id}/publish",
+        json={"idempotency_key": "draft-reel-publish-1"},
+    )
+    assert published.status_code in (200, 202), published.text
+
+    # The end of the line: the format the author picked is what got recorded as
+    # attempted. Storing it without forwarding it would still land here as None.
+    history = client.get("/api/publish/history").json()["items"]
+    attempt = next(h for h in history if h["channel_id"] == INSTAGRAM)
+    assert attempt["post_type"] == "reel"
+
+
+def test_post_type_can_be_corrected_after_the_fact(client) -> None:
+    r = _draft(
+        client,
+        [{"account_id": "company", "channel_id": INSTAGRAM, "content": "Copy"}],
+    )
+    post_id = r.json()["posts"][0]["id"]
+
+    changed = client.patch(
+        f"/api/ai/campaign-posts/{post_id}", json={"post_type": "carousel"}
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["post_type"] == "carousel"
+
+    cleared = client.patch(
+        f"/api/ai/campaign-posts/{post_id}", json={"post_type": ""}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["post_type"] is None

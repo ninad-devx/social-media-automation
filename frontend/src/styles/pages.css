@@ -398,14 +398,17 @@
   color: var(--c-text-muted);
 }
 
-.media__thumb img {
+.media__thumb img,
+.media__thumb video {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
 .media__thumb.is-broken img,
-.preview__media-item.is-broken img {
+.media__thumb.is-broken video,
+.preview__media-item.is-broken img,
+.preview__media-item.is-broken video {
   display: none;
 }
 
@@ -592,18 +595,17 @@
   background: var(--c-surface-3);
 }
 
-.preview__media-item img {
+.preview__media-item img,
+.preview__media-item video {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
 
+/* A video element renders its own inline controls and baseline gap unless it is
+   told not to, which pushed the preview grid out of shape. */
 .preview__media-video {
-  display: grid;
-  place-items: center;
-  height: 100%;
-  font-size: var(--t-xs);
-  color: var(--c-text-muted);
+  display: block;
 }
 
 .preview__footer {
@@ -853,6 +855,14 @@
   align-items: center;
   gap: var(--s-3);
   font-size: var(--t-sm);
+}
+
+/* The platform is secondary now that the profile name is shown, so it is
+   de-emphasised and pushed to the right rather than crowding the name. */
+.dash-channel__platform {
+  margin-left: auto;
+  font-size: var(--t-xs);
+  color: var(--c-text-muted);
 }
 
 .dash-account__muted {

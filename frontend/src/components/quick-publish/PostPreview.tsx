@@ -79,15 +79,32 @@ export function PostPreview({
                 was capped at three, which made the last cell overflow. */}
             {media.slice(0, 4).map((m, i) => (
               <span key={`${m.url}-${i}`} className="preview__media-item">
-                {m.type === "image" ? (
+                {m.type === "video" ? (
+                  // An actual <video>, not the word "Video".
+                  //
+                  // The previous version rendered a text placeholder for every
+                  // non-image, so selecting Reel and attaching a video showed
+                  // nothing to look at and there was no way to tell whether the
+                  // right file had been picked. `preload="metadata"` is enough
+                  // for the browser to fetch a frame without pulling the whole
+                  // file, and the controls are off because this is a preview.
+                  <video
+                    className="preview__media-video"
+                    src={m.preview_url || m.url}
+                    preload="metadata"
+                    muted
+                    playsInline
+                    onError={(e) =>
+                      e.currentTarget.parentElement?.classList.add("is-broken")
+                    }
+                  />
+                ) : (
                   <img
                     src={m.preview_url || m.url}
                     alt=""
                     loading="lazy"
                     onError={(e) => e.currentTarget.parentElement?.classList.add("is-broken")}
                   />
-                ) : (
-                  <span className="preview__media-video">Video</span>
                 )}
               </span>
             ))}

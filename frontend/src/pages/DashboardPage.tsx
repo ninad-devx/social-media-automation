@@ -1,10 +1,12 @@
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Card, Button, Badge } from "../components/ui";
 import { PlatformAvatar } from "../components/ui/PlatformAvatar";
 import { platformMeta } from "../lib/platforms";
 import { useAccounts } from "../hooks/useAccounts";
-import { useChannels } from "../hooks/useChannels";
 import { useSystemStatus } from "../hooks/useSystemStatus";
+import { channelsApi } from "../services/integrations";
+import type { Channel } from "../types/channel";
 
 /**
  * Dashboard.
@@ -32,10 +34,43 @@ export function DashboardPage() {
       : engineStatus === "Not checked"
         ? "neutral"
         : "danger";
-  const firstAccountId = accounts?.[0]?.id ?? null;
-  const { channels } = useChannels(firstAccountId);
-
   const totalChannels = accounts?.reduce((n, a) => n + a.channel_count, 0) ?? 0;
+
+  // Every brand's channels, not just the first.
+  //
+  // The dashboard used to call useChannels once, for accounts[0], and rendered
+  // a bare "N channels connected" for every other brand. With more than one
+  // brand configured that is most of the workspace reduced to a number: you
+  // could not see, from the dashboard, which channels a brand actually had.
+  const [channelsByAccount, setChannelsByAccount] = useState<Record<string, Channel[]>>({});
+  const accountIds = (accounts ?? []).map((a) => a.id).join(",");
+
+  useEffect(() => {
+    if (!accountIds) {
+      setChannelsByAccount({});
+      return;
+    }
+    const controller = new AbortController();
+    const ids = accountIds.split(",");
+    let cancelled = false;
+
+    Promise.all(
+      ids.map((id) =>
+        channelsApi
+          .listForAccount(id, false, controller.signal)
+          .then((list) => [id, list] as const)
+          .catch(() => [id, [] as Channel[]] as const),
+      ),
+    ).then((pairs) => {
+      if (cancelled) return;
+      setChannelsByAccount(Object.fromEntries(pairs));
+    });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [accountIds]);
 
   return (
     <div className="page">
@@ -86,33 +121,42 @@ export function DashboardPage() {
 
         {!loading && accounts && accounts.length > 0 && (
           <div className="dash-accounts">
-            {accounts.map((a) => (
-              <div key={a.id} className="dash-account">
-                <div className="dash-account__head">
-                  <h4>{a.name}</h4>
-                  <span className="dash-account__count">
-                    {a.channel_count} channel{a.channel_count === 1 ? "" : "s"}
-                  </span>
+            {accounts.map((a) => {
+              const brandChannels = channelsByAccount[a.id] ?? [];
+              return (
+                <div key={a.id} className="dash-account">
+                  <div className="dash-account__head">
+                    <h4>{a.name}</h4>
+                    <span className="dash-account__count">
+                      {a.channel_count} channel{a.channel_count === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                  {brandChannels.length > 0 ? (
+                    <ul className="dash-channels">
+                      {brandChannels.map((c) => {
+                        const meta = platformMeta(c.platform);
+                        return (
+                          <li key={c.id} className="dash-channel">
+                            <PlatformAvatar meta={meta} size={26} />
+                            {/* Profile and brand, not just the platform name:
+                                three Instagram accounts are otherwise
+                                indistinguishable on this screen. */}
+                            <span>{c.display_name || c.username || meta.label}</span>
+                            <span className="dash-channel__platform">{meta.label}</span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  ) : (
+                    <p className="dash-account__muted">
+                      {a.channel_count > 0
+                        ? `${a.channel_count} channel${a.channel_count === 1 ? "" : "s"} connected`
+                        : "No channels connected yet"}
+                    </p>
+                  )}
                 </div>
-                {a.id === firstAccountId ? (
-                  <ul className="dash-channels">
-                    {channels.map((c) => {
-                      const meta = platformMeta(c.platform);
-                      return (
-                        <li key={c.id} className="dash-channel">
-                          <PlatformAvatar meta={meta} size={26} />
-                          <span>{meta.label}</span>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <p className="dash-account__muted">
-                    {a.channel_count} channel{a.channel_count === 1 ? "" : "s"} connected
-                  </p>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </Card>
