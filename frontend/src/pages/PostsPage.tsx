@@ -13,6 +13,7 @@ export function PostsPage() {
   const [accountFilter, setAccountFilter] = useState<string>("all");
   const [entries, setEntries] = useState<PublishLogEntry[] | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -26,7 +27,12 @@ export function PostsPage() {
         setEntries(page.items);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        // A failed fetch used to render as "No posts yet", which reads as an
+        // empty account rather than an outage.
+        setError(
+          err instanceof Error ? err.message : "Could not load publishing history.",
+        );
         setEntries([]);
         setLoading(false);
       });
@@ -77,6 +83,12 @@ export function PostsPage() {
           </div>
         )}
 
+        {error && (
+          <p className="notice notice--error" role="alert">
+            {error}
+          </p>
+        )}
+
         {!loading && entries && entries.length === 0 && (
           <EmptyState
             icon={<IconInbox />}
@@ -113,7 +125,7 @@ function PostRow({ entry }: { entry: PublishLogEntry }) {
       <PlatformAvatar meta={meta} size={34} />
       <div className="post-row__body">
         <div className="post-row__top">
-          <span className="post-row__account">{entry.account_id}</span>
+          <span className="post-row__account">{entry.account_name ?? entry.account_id}</span>
           <span className="post-row__dot">·</span>
           <span className="post-row__platform">{meta.label}</span>
           <Badge tone={tone}>{entry.status}</Badge>

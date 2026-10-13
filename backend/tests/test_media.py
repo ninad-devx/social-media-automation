@@ -177,7 +177,7 @@ def test_upload_warns_nothing_when_public_url_configured(
 
 
 def test_uploaded_url_can_be_used_in_a_publish_request(
-    client: TestClient, fake_n8n
+    client: TestClient, fake_n8n, bound_company_channels
 ) -> None:
     """End-to-end: upload, then publish using the returned URL."""
     media = upload(client, PNG).json()

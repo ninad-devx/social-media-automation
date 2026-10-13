@@ -15,7 +15,7 @@ import { accountsApi } from "../../services/accounts";
 import type { Account } from "../../types/account";
 import type { DiscoveredChannel, Integration } from "../../types/integration";
 
-type Banner = { tone: "success" | "danger"; message: string } | null;
+type Banner = { tone: "success" | "danger" | "info"; message: string } | null;
 
 const PLATFORM_LABELS: Record<string, string> = {
   instagram: "Instagram",
@@ -25,6 +25,9 @@ const PLATFORM_LABELS: Record<string, string> = {
   threads: "Threads",
   tiktok: "TikTok",
   mastodon: "Mastodon",
+  youtube: "YouTube",
+  bluesky: "Bluesky",
+  pinterest: "Pinterest",
 };
 
 export function BufferIntegrationsPage() {
@@ -47,6 +50,9 @@ export function BufferIntegrationsPage() {
   const [targetAccount, setTargetAccount] = useState<Record<string, string>>({});
   const [quickBrand, setQuickBrand] = useState(false);
   const [quickBrandName, setQuickBrandName] = useState("");
+  // The workspace the operator has chosen for each integration. Persisted only
+  // on explicit save, never by testing the connection.
+  const [pendingWorkspace, setPendingWorkspace] = useState<Record<string, string>>({});
 
   const reload = useCallback(async () => {
     try {
@@ -113,14 +119,35 @@ export function BufferIntegrationsPage() {
       await action();
       setBanner({ tone: "success", message: success });
     } catch (err) {
-      setBanner({
-        tone: "danger",
-        message: err instanceof ApiError ? err.message : "The action failed.",
-      });
+      // The message is always surfaced. The previous version threw a plain Error
+      // from inside `action`, which the `instanceof ApiError` check below then
+      // discarded, so a failed connection test reported "The action failed."
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : err instanceof Error && err.message
+            ? err.message
+            : "The action failed.";
+      setBanner({ tone: "danger", message });
     } finally {
       setBusyId(null);
       await reload();
     }
+  };
+
+  /** Save the operator's chosen workspace. Never happens implicitly. */
+  const saveWorkspace = async (integration: Integration, organizationId: string) => {
+    if (!organizationId || organizationId === integration.external_organization_id) {
+      setPendingWorkspace((prev) => ({ ...prev, [integration.id]: "" }));
+      return;
+    }
+    await run(
+      integration.id,
+      () =>
+        integrationsApi.update(integration.id, { organization_id: organizationId }),
+      "Workspace selected. Channels will be discovered from this one.",
+    );
+    setPendingWorkspace((prev) => ({ ...prev, [integration.id]: "" }));
   };
 
   const discover = async (integration: Integration) => {
@@ -309,6 +336,9 @@ export function BufferIntegrationsPage() {
         const channels = discovery[integration.id] ?? [];
         const selected = selection[integration.id] ?? [];
         const isBusy = busyId === integration.id;
+        const workspaces = integration.available_organizations ?? [];
+        const pending = pendingWorkspace[integration.id] ?? "";
+        const needsWorkspace = workspaces.length > 1 && !integration.external_organization_id;
 
         return (
           <Card key={integration.id}>
@@ -321,6 +351,43 @@ export function BufferIntegrationsPage() {
               }
               action={<StatusBadge status={integration.status} />}
             />
+
+            {needsWorkspace && (
+              <div className="banner banner--warning">
+                {integration.last_error_message ??
+                  "This token can reach several workspaces. Choose which one to publish through."}
+              </div>
+            )}
+
+            {/* Workspace picker. Explicit by design: the token is validated
+                read-only, then the operator picks, and only then is it saved.
+                The previous version never offered this, so a multi-workspace
+                token silently bound to whichever one Buffer listed first. */}
+            {workspaces.length > 0 && (
+              <div className="inline-form">
+                <Select
+                  aria-label={`Workspace for ${integration.display_name}`}
+                  value={pending || integration.external_organization_id || ""}
+                  options={workspaces.map((w) => ({
+                    value: w.id,
+                    label: w.name,
+                    sublabel: w.id === integration.external_organization_id ? "current" : undefined,
+                  }))}
+                  onChange={(value) =>
+                    setPendingWorkspace((prev) => ({ ...prev, [integration.id]: value }))
+                  }
+                />
+                <Button
+                  size="sm"
+                  variant="primary"
+                  disabled={!pending || pending === integration.external_organization_id}
+                  loading={isBusy}
+                  onClick={() => saveWorkspace(integration, pending)}
+                >
+                  Use this workspace
+                </Button>
+              </div>
+            )}
 
             <dl className="settings__facts">
               <div>
@@ -442,8 +509,15 @@ export function BufferIntegrationsPage() {
                     >
                       New brand
                     </Button>
-                    <Button size="sm" variant="primary" onClick={() => sync(integration)}>
-                      Import {selected.length || ""} selected
+                    <Button
+                      size="sm"
+                      variant="primary"
+                      disabled={selected.length === 0}
+                      onClick={() => sync(integration)}
+                    >
+                      {selected.length
+                        ? `Import ${selected.length} selected`
+                        : "Import selected"}
                     </Button>
                   </div>
                 </div>
@@ -474,7 +548,16 @@ export function BufferIntegrationsPage() {
 
                 <ul className="channel-picker">
                   {channels.map((channel) => {
-                    const unusable = channel.locked || channel.disconnected;
+                    // Importing is blocked for anything that would come in
+                    // unusable. Previously only `locked` and `disconnected` were
+                    // considered, so an unsupported platform or a queue-paused
+                    // profile could be imported and then behaved oddly forever.
+                    const reasons: string[] = [];
+                    if (channel.locked) reasons.push("locked in Buffer");
+                    if (channel.disconnected) reasons.push("disconnected");
+                    if (!channel.supported) reasons.push("not supported by this engine");
+                    if (channel.queue_paused) reasons.push("queue is paused");
+                    const unusable = reasons.length > 0;
                     const imported = channel.already_imported;
                     return (
                       <li key={channel.external_channel_id} className="channel-option">
@@ -501,6 +584,9 @@ export function BufferIntegrationsPage() {
                           {channel.disconnected && <Badge tone="warning">Disconnected</Badge>}
                           {channel.queue_paused && <Badge tone="info">Queue paused</Badge>}
                           {!channel.supported && <Badge tone="warning">Unsupported here</Badge>}
+                          {unusable && (
+                            <span className="muted small">Cannot be imported: {reasons.join(", ")}.</span>
+                          )}
                         </span>
                       </li>
                     );

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { Badge, Button, Card, EmptyState } from "../components/ui";
 import { campaignsApi } from "../services/ai";
@@ -12,6 +12,7 @@ const FILTERS = [
   { value: "ready", label: "Ready" },
   { value: "published", label: "Published" },
   { value: "partially_failed", label: "Partially failed" },
+  { value: "partially_published", label: "Partially published" },
 ];
 
 const SOURCES = [
@@ -27,22 +28,29 @@ export function CampaignHistoryPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Guards against a slow response overwriting a newer one (L7).
+  const current = useRef(0);
+
   const load = useCallback(
     async (signal?: AbortSignal) => {
+      const token = ++current.current;
       setLoading(true);
       try {
-        setPage(
-          await campaignsApi.list(
-            { limit: 50, status: status || undefined, source: source || undefined },
-            signal
-          )
+        const result = await campaignsApi.list(
+          { limit: 50, status: status || undefined, source: source || undefined },
+          signal
         );
+        if (current.current !== token) return;
+        setPage(result);
         setError(null);
       } catch (err) {
         if ((err as Error)?.name === "AbortError") return;
         setError((err as Error).message);
       } finally {
-        setLoading(false);
+        // Only clear the flag if this request is still the current one. An
+        // aborted request was superseded, so clearing here would hide the
+        // loading state of the request that replaced it.
+        if (current.current === token) setLoading(false);
       }
     },
     [status, source]
@@ -54,13 +62,21 @@ export function CampaignHistoryPage() {
     return () => controller.abort();
   }, [load]);
 
+  // `deleting` guards the button so a double click cannot send two DELETEs:
+  // the second would 404 and surface an error even though the delete worked.
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   const remove = async (id: string) => {
+    if (deleting) return;
     if (!window.confirm("Delete this campaign and all of its drafts?")) return;
+    setDeleting(id);
     try {
       await campaignsApi.remove(id);
       await load();
     } catch (err) {
       setError((err as Error).message);
+    } finally {
+      setDeleting(null);
     }
   };
 
@@ -139,7 +155,12 @@ export function CampaignHistoryPage() {
               <Link className="btn btn--secondary btn--sm" to={`/campaigns/${c.id}`}>
                 <span>Open</span>
               </Link>
-              <Button size="sm" variant="danger" onClick={() => remove(c.id)}>
+              <Button
+                size="sm"
+                variant="danger"
+                loading={deleting === c.id}
+                onClick={() => remove(c.id)}
+              >
                 Delete
               </Button>
             </div>

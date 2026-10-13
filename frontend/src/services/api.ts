@@ -85,21 +85,78 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     if (response.status === 401) {
       notifySessionExpired();
     }
-    const fallback: ApiErrorBody = {
-      success: false,
-      request_id: response.headers.get("X-Request-Id") ?? "",
-      error: {
-        code: response.status === 404 ? "NOT_FOUND" : response.status === 401 ? "UNAUTHORIZED" : "INTERNAL_ERROR",
-        message:
-          response.status === 401
-            ? "Your session has ended. Please sign in again."
-            : "Something went wrong. Please try again.",
+
+    const defaultCode = codeForStatus(response.status);
+
+    // FastAPI answers `{"detail": ...}` for HTTPException and for unmatched
+    // routes, and the app registers handlers only for its own error types - so
+    // there is no `error` key to read. The previous code treated any truthy
+    // payload as our envelope, so every 404 surfaced as INTERNAL_ERROR with
+    // "Something went wrong" and the specific fallback below was unreachable.
+    const envelope = normalizeErrorPayload(payload);
+
+    throw new ApiError(
+      envelope ?? {
+        success: false,
+        request_id: response.headers.get("X-Request-Id") ?? "",
+        error: {
+          code: defaultCode,
+          message:
+            response.status === 401
+              ? "Your session has ended. Please sign in again."
+              : response.status === 404
+                ? "We couldn't find what you were looking for."
+                : detailMessage(payload) ??
+                  `Something went wrong (HTTP ${response.status}). Please try again.`,
+        },
       },
-    };
-    throw new ApiError((payload as ApiErrorBody) ?? fallback, response.status);
+      response.status,
+    );
   }
 
   return payload as T;
+}
+
+function codeForStatus(status: number): string {
+  if (status === 401) return "UNAUTHORIZED";
+  if (status === 403) return "FORBIDDEN";
+  if (status === 404) return "NOT_FOUND";
+  if (status === 409) return "CONFLICT";
+  if (status === 422) return "INVALID_REQUEST";
+  if (status === 429) return "RATE_LIMITED";
+  if (status >= 500) return "INTERNAL_ERROR";
+  return "REQUEST_FAILED";
+}
+
+/** Extract a message from whatever shape the server used. */
+function detailMessage(payload: unknown): string | null {
+  if (typeof payload === "string" && payload.trim()) return payload.trim().slice(0, 300);
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.detail === "string" && record.detail.trim()) {
+    return record.detail.trim().slice(0, 300);
+  }
+  if (record.detail && typeof record.detail === "object") {
+    // FastAPI's 422 shape: { detail: [{ msg, loc, ... }] }
+    const first = (record.detail as Array<Record<string, unknown>>)[0];
+    if (first && typeof first.msg === "string") return first.msg.slice(0, 300);
+  }
+  return null;
+}
+
+/** True only when the payload really is our normalized error envelope. */
+function normalizeErrorPayload(payload: unknown): ApiErrorBody | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const error = record.error as { code?: unknown; message?: unknown } | undefined;
+  if (!error || typeof error !== "object") return null;
+  if (typeof error.code !== "string" || typeof error.message !== "string") return null;
+  return {
+    success: false,
+    request_id: typeof record.request_id === "string" ? record.request_id : "",
+    error: { code: error.code, message: error.message, field: null },
+    errors: Array.isArray(record.errors) ? (record.errors as ApiErrorBody["errors"]) : undefined,
+  };
 }
 
 /**
@@ -123,8 +180,12 @@ function notifySessionExpired() {
 
 export const api = {
   get: <T>(path: string, signal?: AbortSignal) => request<T>(path, { signal }),
-  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
-    request<T>(path, { method: "POST", body, headers }),
+  post: <T>(
+    path: string,
+    body?: unknown,
+    signal?: AbortSignal,
+    headers?: Record<string, string>,
+  ) => request<T>(path, { method: "POST", body, signal, headers }),
   put: <T>(path: string, body?: unknown, signal?: AbortSignal) =>
     request<T>(path, { method: "PUT", body, signal }),
   patch: <T>(path: string, body?: unknown, signal?: AbortSignal) =>

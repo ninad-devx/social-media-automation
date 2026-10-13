@@ -46,8 +46,18 @@ _HKDF_INFO = b"sma-media-public-url-v1"
 _DEFAULT_TTL_DAYS = 365
 
 
-def _derive_key(settings: Settings) -> bytes:
-    """Return the 32-byte signing key for public media URLs."""
+def _derive_key(settings: "Settings | None") -> bytes:
+    """Return the signing key for public media URLs.
+
+    Accepts None because a storage backend can be constructed without settings
+    (unit tests, one-off scripts). With no settings there is no key, so signing
+    yields an empty tag and the public route refuses to serve the file. That is
+    the safe direction: an unsigned public URL would hand out media to anyone
+    who guessed an id.
+    """
+    if settings is None:
+        return b""
+
     explicit = getattr(settings, "media_public_signing_key", None)
     if explicit:
         return explicit.encode("utf-8")
@@ -62,11 +72,13 @@ def _derive_key(settings: Settings) -> bytes:
     return hashlib.sha256(_HKDF_INFO + master.encode("utf-8")).digest()
 
 
-def has_signing_key(settings: Settings) -> bool:
+def has_signing_key(settings: "Settings | None") -> bool:
     return bool(_derive_key(settings))
 
 
-def sign(asset_id: str, settings: Settings, expires_at: int | None = None) -> str:
+def sign(
+    asset_id: str, settings: "Settings | None", expires_at: int | None = None
+) -> str:
     """Return the `?s=...&e=...` query string for an asset."""
     key = _derive_key(settings)
     if not key:
@@ -79,7 +91,12 @@ def sign(asset_id: str, settings: Settings, expires_at: int | None = None) -> st
     return f"?s={base64.urlsafe_b64encode(tag).decode().rstrip('=')}&e={expires_at}"
 
 
-def verify(asset_id: str, signature: str, expires_at: str | int | None, settings: Settings) -> bool:
+def verify(
+    asset_id: str,
+    signature: str,
+    expires_at: "str | int | None",
+    settings: "Settings | None",
+) -> bool:
     """Constant-time check of a presented public-media signature."""
     key = _derive_key(settings)
     if not key or not signature:

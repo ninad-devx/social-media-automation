@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, File, Query, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from sqlalchemy import select
 
 from app.api.deps import ApiKeyDep, DbDep, SettingsDep
@@ -26,6 +26,14 @@ router = APIRouter(tags=["media"])
 # Enough bytes to cover every signature we inspect.
 _HEAD_BYTES = 32
 _CHUNK = 1024 * 256
+
+#: Applied to every served asset, local or remote.
+_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Disposition": "inline",
+    "Cache-Control": "public, max-age=31536000, immutable",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+}
 
 
 class _LimitedStream:
@@ -138,6 +146,34 @@ async def upload_media(
     )
 
 
+def _serve(storage, asset_id: str) -> FileResponse | StreamingResponse:
+    """Serve an asset from either storage backend.
+
+    `LocalDiskStorage.resolve()` returns a path; `S3ObjectStorage.resolve()`
+    returns None by design because a remote object has no local file. The two
+    GET routes used to treat None as "not found" and 404 on every request under
+    `MEDIA_STORAGE_BACKEND=s3`, which is the documented production setting.
+    """
+    path = storage.resolve(asset_id)
+    if path is not None:
+        return FileResponse(
+            path=path,
+            media_type=storage.kind_for(path).mime,
+            headers=_HEADERS,
+        )
+
+    handle = storage.open(asset_id)
+    if handle is None:
+        raise AppError(ErrorCode.NOT_FOUND, 404)
+
+    stream, kind, _size = handle
+    return StreamingResponse(
+        stream,
+        media_type=kind.mime,
+        headers=_HEADERS,
+    )
+
+
 @router.get("/media", response_model=list[MediaAssetOut], dependencies=[ApiKeyDep])
 def list_media(
     db: DbDep,
@@ -156,22 +192,7 @@ def list_media(
 )
 def get_media(asset_id: str, settings: SettingsDep) -> FileResponse:
     """Serve an uploaded file."""
-    storage = build_storage(settings)
-    path = storage.resolve(asset_id)
-    if path is None:
-        raise AppError(ErrorCode.NOT_FOUND, 404)
-
-    # FileResponse takes a path (its first positional arg), not a file object.
-    return FileResponse(
-        path=path,
-        media_type=storage.kind_for(path).mime,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": "inline",
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "Content-Security-Policy": "default-src 'none'; sandbox",
-        },
-    )
+    return _serve(build_storage(settings), asset_id)
 
 
 @router.api_route(
@@ -209,21 +230,7 @@ def get_media_public(
         logger.warning("media.public_denied", extra={"context": {"asset_id": asset_id}})
         raise AppError(ErrorCode.NOT_FOUND, 404)
 
-    storage = build_storage(settings)
-    path = storage.resolve(asset_id)
-    if path is None:
-        raise AppError(ErrorCode.NOT_FOUND, 404)
-
-    return FileResponse(
-        path=path,
-        media_type=storage.kind_for(path).mime,
-        headers={
-            "X-Content-Type-Options": "nosniff",
-            "Content-Disposition": "inline",
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "Content-Security-Policy": "default-src 'none'; sandbox",
-        },
-    )
+    return _serve(build_storage(settings), asset_id)
 
 
 @router.delete("/media/{asset_id}", status_code=204, dependencies=[ApiKeyDep])

@@ -521,6 +521,47 @@ def schedule_post(
     )
 
 
+def _publish_one(
+    db: DbDep,
+    service: CampaignService,
+    n8n: N8nService,
+    post_id: str,
+    *,
+    when: datetime | None,
+    timezone: str | None,
+    fallback_timezone: str,
+    idempotency_key: str,
+) -> PostActionResult:
+    """Publish/schedule one post and always attribute the outcome correctly.
+
+    The bulk endpoints used to wrap this in a try/except and recover the post
+    with ``locals().get("post")``. That is a real bug: when the lookup itself
+    failed, the stale ``post`` binding from the *previous* loop iteration was
+    still in scope, so the failure was reported against the wrong account and
+    channel. The post id is a parameter here and the failure branch can only
+    ever reference the id it was actually given.
+    """
+    try:
+        post = service.get_post(post_id)
+    except AppError as exc:
+        return PostActionResult(
+            post_id=post_id,
+            account_id="",
+            channel_id="",
+            ok=False,
+            error_code=exc.code,
+            error_message=exc.user_message,
+        )
+
+    campaign = service.get(post.campaign_id)
+    return _publish_post(
+        post, campaign, db, n8n,
+        when=when,
+        timezone=timezone or post.timezone or fallback_timezone,
+        idempotency_key=idempotency_key,
+    )
+
+
 @router.post("/campaign-posts/bulk-publish", response_model=BulkResult, dependencies=[ApiKeyDep])
 def bulk_publish(
     payload: BulkPublishRequest, db: DbDep, settings: SettingsDep, n8n: N8nDep
@@ -539,29 +580,15 @@ def bulk_publish(
     results: list[PostActionResult] = []
 
     for post_id in payload.post_ids:
-        try:
-            post = service.get_post(post_id)
-            campaign = service.get(post.campaign_id)
-            results.append(
-                _publish_post(
-                    post, campaign, db, n8n,
-                    when=None,
-                    timezone=post.timezone,
-                    idempotency_key=f"{prefix}-{post_id}",
-                )
+        results.append(
+            _publish_one(
+                db, service, n8n, post_id,
+                when=None,
+                timezone=None,  # each post keeps its own timezone
+                fallback_timezone=settings.default_timezone,
+                idempotency_key=f"{prefix}-{post_id}",
             )
-        except AppError as exc:
-            # Keep the ids so the UI can attribute the failure to a row even
-            # when the failure happened before the post could be loaded.
-            failed_post = locals().get("post")
-            results.append(
-                PostActionResult(
-                    post_id=post_id,
-                    account_id=failed_post.account_id if failed_post else "",
-                    channel_id=failed_post.channel_id if failed_post else "",
-                    ok=False, error_code=exc.code, error_message=exc.user_message,
-                )
-            )
+        )
 
     succeeded = sum(1 for r in results if r.ok)
     return BulkResult(
@@ -590,29 +617,15 @@ def bulk_schedule(
             when = override.scheduled_at
             timezone = override.timezone or timezone
 
-        try:
-            post = service.get_post(post_id)
-            campaign = service.get(post.campaign_id)
-            results.append(
-                _publish_post(
-                    post, campaign, db, n8n,
-                    when=when,
-                    timezone=timezone,
-                    idempotency_key=f"{prefix}-{post_id}",
-                )
+        results.append(
+            _publish_one(
+                db, service, n8n, post_id,
+                when=when,
+                timezone=timezone,
+                fallback_timezone=settings.default_timezone,
+                idempotency_key=f"{prefix}-{post_id}",
             )
-        except AppError as exc:
-            # Keep the ids so the UI can attribute the failure to a row even
-            # when the failure happened before the post could be loaded.
-            failed_post = locals().get("post")
-            results.append(
-                PostActionResult(
-                    post_id=post_id,
-                    account_id=failed_post.account_id if failed_post else "",
-                    channel_id=failed_post.channel_id if failed_post else "",
-                    ok=False, error_code=exc.code, error_message=exc.user_message,
-                )
-            )
+        )
 
     succeeded = sum(1 for r in results if r.ok)
     return BulkResult(

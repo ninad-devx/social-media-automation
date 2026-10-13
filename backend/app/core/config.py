@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./social_media.db"
     sql_echo: bool = False
 
+    # Insert the demo "company" brand and its channels, but only into a database
+    # that has no accounts at all. Defaults to off in production, where demo
+    # fixture data has no business existing, and never resurrects or overwrites
+    # anything that already exists.
+    seed_demo_data: bool = True
+
     # ---- n8n publishing engine -----------------------------------------
     # Full production webhook URL of the existing n8n workflow, e.g.
     #   http://localhost:5678/webhook/social/publish
@@ -54,6 +60,19 @@ class Settings(BaseSettings):
     # Either way the same single generic workflow JSON is used, and the n8n
     # workflow never needs per-account configuration.
     publish_engine: str = "n8n"
+
+    # ---- Publishing safety guard ------------------------------------------
+    # "off"        no interception. The production default: behaviour is
+    #              unchanged and this module is inert.
+    # "dry_run"    every guarded Buffer/n8n operation raises and is recorded.
+    # "monitor"    operations proceed but are recorded.
+    # The test suite arms "dry_run" so a test that accidentally reaches a
+    # publishing path fails loudly instead of reaching a real channel. An
+    # unrecognised value fails closed to "dry_run".
+    publishing_guard: str = "off"
+    # Where the guard appends its audit records. Left empty it defaults to
+    # ./publishing-guard.jsonl next to the process working directory.
+    publishing_guard_log: str = ""
 
     # ---- Buffer API ------------------------------------------------------
     # Buffer's supported API is GraphQL over a single endpoint. The legacy
@@ -106,6 +125,12 @@ class Settings(BaseSettings):
     default_timezone: str = "Asia/Dhaka"
     # Guards against scheduling further out than this many days.
     max_schedule_days_ahead: int = 365
+
+    # How long an in-flight Idempotency-Key keeps blocking a concurrent request.
+    # Past this the previous attempt is presumed dead (crashed process, lost
+    # response) and the key is taken over. It only ever releases a key that
+    # never produced a successful publish.
+    idempotency_stale_after_seconds: int = 120
 
     # ---- AI providers ----------------------------------------------------
     # Fernet key used to encrypt provider API keys at rest.
@@ -249,6 +274,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.app_env.strip().lower() in ("production", "prod")
+
+    @property
+    def effective_seed_demo_data(self) -> bool:
+        """Demo fixture data is for local development only."""
+        return self.seed_demo_data and not self.is_production
 
     @property
     def uses_direct_publishing(self) -> bool:
@@ -418,3 +448,21 @@ def get_settings() -> Settings:
 
 
 SettingsDep = Annotated[Settings, Field(default_factory=get_settings)]
+
+
+def current_publishing_guard_mode() -> str:
+    """Effective guard mode, from the environment.
+
+    Read from the environment rather than the cached Settings object on
+    purpose: tests arm and disarm the guard between cases, and a cached value
+    would silently ignore that. A value that is present but invalid fails
+    closed to ``dry_run``.
+    """
+    import os
+
+    from app.services.publishing_guard import MODE_DRY_RUN, MODE_OFF, VALID_MODES
+
+    raw = (os.environ.get("PUBLISHING_GUARD") or "").strip().lower()
+    if not raw:
+        return MODE_OFF
+    return raw if raw in VALID_MODES else MODE_DRY_RUN

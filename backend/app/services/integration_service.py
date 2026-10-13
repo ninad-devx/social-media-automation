@@ -49,17 +49,35 @@ def new_integration_id() -> str:
 
 
 def new_channel_id(account_id: str, external_channel_id: str) -> str:
-    """Deterministic internal id for one external profile.
+    """Deterministic internal id for one external profile *within one brand*.
 
-    Derived from the external id ALONE, deliberately not from the account id:
-    that way the same Buffer profile always maps to the same local row, so a
-    second import is recognised as an update (or as an illegal move to another
-    brand) instead of silently creating a duplicate.
+    Derived from the account id AND the external id. That combination is what
+    makes "move this Buffer profile to a different brand" expressible: the two
+    assignments get different local ids, so releasing one by archiving it frees
+    the profile for the other without either row having to be rewritten.
 
-    `account_id` is accepted for call-site readability but deliberately unused.
+    Earlier this hashed the external id alone, which pinned every Buffer profile
+    to one brand permanently - a channel that had once been imported could never
+    be attached anywhere else, and there was no unlink to release it.
+
+    Existing rows are untouched: their ids were computed by the old formula and
+    nothing recomputes them. A re-import into the *same* brand finds the
+    existing row by `external_channel_id`, not by regenerating this id.
     """
-    fingerprint = hashlib.sha256(external_channel_id.encode("utf-8")).hexdigest()[:12]
+    fingerprint = hashlib.sha256(f"{account_id}\x00{external_channel_id}".encode("utf-8")).hexdigest()[:12]
     return f"ch_{fingerprint}"
+
+
+def find_channel_by_external(db: Session, external_channel_id: str) -> Channel | None:
+    """The live local row that currently claims a Buffer profile, if any."""
+    if not external_channel_id:
+        return None
+    return db.scalars(
+        select(Channel).where(
+            Channel.external_channel_id == external_channel_id,
+            Channel.archived_at.is_(None),
+        )
+    ).first()
 
 
 class IntegrationService:
@@ -88,8 +106,70 @@ class IntegrationService:
 
     def channels_for(self, integration_id: str) -> list[Channel]:
         return list(
-            self._db.scalars(select(Channel).where(Channel.integration_id == integration_id)).all()
+            self._db.scalars(
+                select(Channel).where(
+                    Channel.integration_id == integration_id,
+                    Channel.archived_at.is_(None),
+                )
+            ).all()
         )
+
+    # ------------------------------------------------------------------ #
+    # archival
+    # ------------------------------------------------------------------ #
+    def archive_channel(self, channel: Channel, *, reason: str | None = None) -> Channel:
+        """Remove a channel locally. Never touches Buffer.
+
+        Two distinct effects, both deliberate:
+
+        1. `active=False` + `archived_at` so it leaves every selector while the
+           row - and therefore the publishing history that references it - stays.
+        2. The external assignment is released. `external_channel_id` and
+           `integration_id` are cleared, which is what allows the same Buffer
+           profile to be imported into a *different* brand later. The unique
+           index on `external_channel_id` guarantees no second row can claim it
+           in the meantime.
+
+        Nothing is sent to Buffer: this is a local bookkeeping operation, and a
+        disconnect in Buffer is a separate, explicit act.
+        """
+        channel.active = False
+        channel.archived_at = datetime.now(timezone.utc)
+        channel.archived_reason = (reason or "removed_by_operator")[:64]
+        channel.external_channel_id = None
+        channel.integration_id = None
+        channel.external_service = None
+        channel.connection_status = "unknown"
+        channel.is_locked = False
+        channel.queue_paused = False
+        self._db.commit()
+        self._db.refresh(channel)
+        logger.info(
+            "integration.channel_archived",
+            extra={
+                "context": {
+                    "channel_id": channel.id,
+                    "account_id": channel.account_id,
+                    "reason": channel.archived_reason,
+                }
+            },
+        )
+        return channel
+
+    def restore_channel(self, channel: Channel) -> Channel:
+        """Undo an archive without re-linking to Buffer.
+
+        The external assignment is not restored, because it was released on
+        purpose and re-acquiring it has to go through the normal import flow
+        (where ownership is checked). This clears the archive mark so the row
+        stops looking removed; the operator then re-imports the profile.
+        """
+        channel.archived_at = None
+        channel.archived_reason = None
+        channel.active = True
+        self._db.commit()
+        self._db.refresh(channel)
+        return channel
 
     # ------------------------------------------------------------------ #
     # credentials
@@ -98,7 +178,7 @@ class IntegrationService:
         """Store ciphertext + a masked hint. The plaintext is never persisted."""
         return self._cipher.encrypt(api_key), hint_for(api_key)
 
-    def _client_for(self, integration: Integration) -> BufferClient:
+    def client_for(self, integration: Integration) -> BufferClient:
         """Resolve the stored credential and build a client for it.
 
         The token is decrypted into memory only. It is never placed in a
@@ -252,10 +332,25 @@ class IntegrationService:
     # connection testing
     # ------------------------------------------------------------------ #
     def _probe(self, integration: Integration, organization_id: str | None = None) -> None:
-        """Run a real check and record the outcome. Never raises."""
+        """Run a real check and record the outcome. Never raises.
+
+        Read-only with respect to the integration's own configuration: it may
+        fill in `external_organization_id` when the integration has never been
+        bound, but it must never move an integration that already has an
+        explicit workspace selection. The previous implementation ended with an
+        `elif len(organizations) > 1 ... match = organizations[0]`, so pressing
+        "Test connection" silently re-pointed a multi-workspace token at
+        whichever workspace Buffer happened to list first.
+        """
         now = datetime.now(timezone.utc)
+
+        existing_choice = integration.external_organization_id
+        # An explicit `organization_id` argument (create/update) is a deliberate
+        # operator choice and always wins.
+        explicit_choice = organization_id or existing_choice
+
         try:
-            organizations = self._client_for(integration).test_connection()
+            organizations = self.client_for(integration).test_connection()
         except BufferApiError as exc:
             integration.status = (
                 STATUS_REAUTH_REQUIRED if exc.code == "BUFFER_AUTH_ERROR" else STATUS_CONNECTION_FAILED
@@ -284,13 +379,42 @@ class IntegrationService:
             integration.last_tested_at = now
             return
 
-        chosen_id = organization_id or integration.external_organization_id
-        match = next((o for o in organizations if o.id == chosen_id), None)
+        known_ids = {o.id for o in organizations}
+        match = next((o for o in organizations if o.id == explicit_choice), None)
+
+        # Cache what the token can reach BEFORE any early return, so the UI's
+        # workspace picker has the list even when the integration cannot be
+        # bound yet because a choice is still required.
+        integration.discovered_organizations_json = json.dumps(
+            [{"id": o.id, "name": o.name} for o in organizations]
+        )
+
+        if explicit_choice and match is None:
+            # The saved workspace is no longer visible with this token. That is
+            # a real problem the operator has to resolve, so it is reported
+            # rather than papered over by picking a different workspace.
+            integration.status = STATUS_SYNC_REQUIRED
+            integration.last_error_code = "BUFFER_ORGANIZATION_NOT_FOUND"
+            integration.last_error_message = (
+                f"Workspace '{explicit_choice}' is not visible with this token any more. "
+                "Choose another workspace, or enter a token that can reach it."
+            )
+            integration.last_tested_at = now
+            return
+
         if match is None:
-            # No explicit choice yet: bind to the only workspace, or the first
-            # one when several exist (the UI forces a choice in that case).
-            match = organizations[0]
-        elif len(organizations) > 1 and organization_id is None:
+            # Never bound yet. A single workspace is unambiguous; several means
+            # the operator has to choose, so nothing is bound and the UI is told
+            # to ask.
+            if len(organizations) > 1:
+                integration.status = STATUS_NOT_CONFIGURED
+                integration.last_error_code = "BUFFER_WORKSPACE_SELECTION_REQUIRED"
+                integration.last_error_message = (
+                    f"This token can reach {len(organizations)} workspaces. "
+                    "Choose which one to publish through in Settings."
+                )
+                integration.last_tested_at = now
+                return
             match = organizations[0]
 
         integration.external_organization_id = match.id
@@ -299,10 +423,6 @@ class IntegrationService:
         integration.last_error_code = None
         integration.last_error_message = None
         integration.last_tested_at = now
-        # Cached so the UI can offer a workspace switcher without another call.
-        integration.discovered_organizations_json = json.dumps(
-            [{"id": o.id, "name": o.name} for o in organizations]
-        )
         logger.info(
             "integration.test.ok",
             extra={"context": {"integration_id": integration.id, "organization": match.id}},
@@ -314,15 +434,218 @@ class IntegrationService:
         self._db.refresh(integration)
         return integration
 
+    def select_organization(self, integration: Integration, organization_id: str) -> Integration:
+        """Bind the integration to a workspace the operator chose.
+
+        Verifies the workspace is one this credential can actually reach, so a
+        stale or hand-typed id is refused instead of producing an integration
+        that fails on every publish.
+        """
+        if not organization_id or not organization_id.strip():
+            raise AppError(ErrorCode.INVALID_REQUEST, 400, field="organization_id")
+
+        try:
+            orgs = self.client_for(integration).test_connection()
+        except BufferApiError as exc:
+            self._record_sync_failure(integration, exc)
+            self._db.commit()
+            raise AppError(map_buffer_error(exc), 502, field="organization_id") from exc
+
+        match = next((o for o in orgs if o.id == organization_id), None)
+        if match is None:
+            available = ", ".join(f"{o.name} ({o.id})" for o in orgs) or "none"
+            raise AppError(
+                ErrorCode.BUFFER_ORGANIZATION_NOT_FOUND,
+                400,
+                field="organization_id",
+                details=[{"available": available}],
+            )
+
+        integration.external_organization_id = match.id
+        integration.external_organization_name = match.name
+        integration.status = STATUS_CONNECTED
+        integration.last_error_code = None
+        integration.last_error_message = None
+        integration.last_tested_at = datetime.now(timezone.utc)
+        integration.discovered_organizations_json = json.dumps(
+            [{"id": o.id, "name": o.name} for o in orgs]
+        )
+        self._db.commit()
+        self._db.refresh(integration)
+        logger.info(
+            "integration.workspace_selected",
+            extra={"context": {"integration_id": integration.id, "organization": match.id}},
+        )
+        return integration
+
     def list_available_organizations(self, integration: Integration) -> list[dict[str, str]]:
         """Workspaces this token can reach, for the UI's workspace picker."""
         try:
-            orgs = self._client_for(integration).test_connection()
+            orgs = self.client_for(integration).test_connection()
         except BufferApiError as exc:
             raise AppError(map_buffer_error(exc), 502, field="integration_id") from exc
         except AppError:
             raise
         return [{"id": o.id, "name": o.name} for o in orgs]
+
+    # ------------------------------------------------------------------ #
+    # manual channel binding
+    # ------------------------------------------------------------------ #
+    def bind_channel(
+        self,
+        *,
+        account_id: str,
+        integration_id: str,
+        external_channel_id: str,
+        platform: str,
+        display_name: str | None = None,
+        username: str | None = None,
+    ) -> Channel:
+        """Attach a local channel to a specific Buffer profile, by hand.
+
+        This is the fallback when automatic discovery is unavailable. It is
+        also the path the audit found was broken: the previous implementation
+        wrote `external_channel_id` without `integration_id`, which produced a
+        channel that looked linked but could never publish. The fix is not to
+        guess an integration - there is no safe guess - so the caller must name
+        one explicitly, and the profile is verified to actually exist in that
+        workspace before anything is written.
+
+        Order matters: nothing is written until every check has passed, so a
+        rejected binding leaves no partial row behind.
+        """
+        from app.services import platforms as platform_model
+
+        account = self._db.get(Account, account_id)
+        if account is None:
+            raise AppError(ErrorCode.ACCOUNT_NOT_FOUND, 404, field="account_id")
+        if not account.active:
+            raise AppError(ErrorCode.ACCOUNT_INACTIVE, 409, field="account_id")
+
+        external_channel_id = (external_channel_id or "").strip()
+        if not external_channel_id:
+            raise AppError(ErrorCode.INVALID_REQUEST, 400, field="external_channel_id")
+
+        if not (integration_id or "").strip():
+            # Never guess. Which integration to publish through is exactly the
+            # thing that cannot be inferred.
+            raise AppError(
+                ErrorCode.INTEGRATION_REQUIRED_FOR_BINDING, 400, field="integration_id"
+            )
+
+        integration = self._db.get(Integration, integration_id)
+        if integration is None:
+            raise AppError(ErrorCode.INTEGRATION_NOT_FOUND, 404, field="integration_id")
+        if not integration.enabled:
+            raise AppError(ErrorCode.INTEGRATION_DISABLED, 409, field="integration_id")
+        if integration.status in (
+            STATUS_CONNECTION_FAILED,
+            STATUS_DISABLED,
+            STATUS_REAUTH_REQUIRED,
+        ):
+            raise AppError(
+                ErrorCode.INTEGRATION_REAUTH_REQUIRED, 409, field="integration_id"
+            )
+        if not integration.external_organization_id:
+            raise AppError(
+                ErrorCode.INTEGRATION_NOT_TESTED, 409, field="integration_id"
+            )
+
+        requested = (platform or "").strip().lower()
+        if not platform_model.known_platform(requested):
+            raise AppError(
+                ErrorCode.PLATFORM_NOT_SUPPORTED,
+                400,
+                field="platform",
+                details=[{"supported": list(platform_model.PLATFORM_KEYS)}],
+            )
+
+        client = self.client_for(integration)
+
+        # The profile must really exist in the workspace the integration is
+        # bound to. Without this, a typo would create a channel that only fails
+        # at publish time.
+        try:
+            remote = client.get_channel(
+                integration.external_organization_id, external_channel_id
+            )
+        except BufferApiError as exc:
+            self._record_sync_failure(integration, exc)
+            self._db.commit()
+            raise AppError(map_buffer_error(exc), 502, field="external_channel_id") from exc
+
+        if remote is None:
+            raise AppError(
+                ErrorCode.CHANNEL_NOT_IN_INTEGRATION,
+                404,
+                field="external_channel_id",
+                details=[{"organization_id": integration.external_organization_id}],
+            )
+
+        remote_service = remote.service.strip().lower()
+        if remote_service and requested and remote_service != requested:
+            raise AppError(
+                ErrorCode.PLATFORM_NOT_SUPPORTED,
+                400,
+                field="platform",
+                details=[
+                    {
+                        "submitted": requested,
+                        "buffer_service": remote_service,
+                        "reason": "Buffer reports a different platform for this channel.",
+                    }
+                ],
+            )
+
+        local_id = new_channel_id(account_id, external_channel_id)
+        existing = self._db.get(Channel, local_id)
+
+        if existing is None:
+            existing = find_channel_by_external(self._db, external_channel_id)
+
+        if existing is not None and existing.archived_at is None:
+            if existing.account_id != account_id:
+                raise AppError(
+                    ErrorCode.CHANNEL_ALREADY_ASSIGNED, 409, field="external_channel_id"
+                )
+            row = existing
+        elif existing is not None:
+            existing.archived_at = None
+            existing.archived_reason = None
+            row = existing
+        else:
+            row = Channel(id=local_id, account_id=account_id, platform=remote_service or requested)
+            self._db.add(row)
+
+        row.external_username = username or remote.name or None
+        if username:
+            row.username = username
+        elif remote.name:
+            row.username = remote.name
+        if display_name:
+            row.display_name = display_name.strip()[:120]
+        row.archived_at = None
+        row.archived_reason = None
+
+        self.apply_remote(row, remote, integration, activate=True)
+        # A manual binding never overrides an operator-chosen display name.
+        if display_name:
+            row.display_name = display_name.strip()[:120]
+
+        self._db.commit()
+        self._db.refresh(row)
+        logger.info(
+            "integration.channel_bound",
+            extra={
+                "context": {
+                    "channel_id": row.id,
+                    "account_id": account_id,
+                    "integration_id": integration.id,
+                    "organization_id": integration.external_organization_id,
+                }
+            },
+        )
+        return row
 
     # ------------------------------------------------------------------ #
     # channel discovery + sync
@@ -337,7 +660,7 @@ class IntegrationService:
             )
 
         try:
-            channels = self._client_for(integration).list_channels(
+            channels = self.client_for(integration).list_channels(
                 integration.external_organization_id
             )
         except BufferApiError as exc:
@@ -403,7 +726,7 @@ class IntegrationService:
         try:
             remote = {
                 c.id: c
-                for c in self._client_for(integration).list_channels(
+                for c in self.client_for(integration).list_channels(
                     integration.external_organization_id
                 )
             }
@@ -425,22 +748,41 @@ class IntegrationService:
             row = self._db.get(Channel, local_id)
 
             if row is None:
+                # Another brand may still hold this profile (or an archived row
+                # may exist under the old id formula), so look it up by the
+                # external id before creating anything.
+                row = find_channel_by_external(self._db, external_id)
+
+            if row is None:
                 row = Channel(id=local_id, account_id=account_id, platform=buffer_channel.service)
                 self._db.add(row)
                 created += 1
+            elif row.archived_at is not None:
+                # Re-importing a profile that was archived earlier on this brand
+                # revives the same row rather than creating a second one.
+                row.archived_at = None
+                row.archived_reason = None
+                updated += 1
             elif row.account_id != account_id:
                 # Never move a channel between accounts silently: that would
                 # silently republish a brand's history under another brand.
+                # Reassignment is an explicit operation instead.
                 raise AppError(
                     ErrorCode.CHANNEL_ALREADY_ASSIGNED,
                     409,
                     field="external_channel_ids",
-                    details=[{"channel_id": row.id, "account_id": row.account_id}],
+                    details=[
+                        {
+                            "channel_id": row.id,
+                            "account_id": row.account_id,
+                            "reason": "Archive it on its current brand, or use reassign.",
+                        }
+                    ],
                 )
             else:
                 updated += 1
 
-            self._apply_remote(row, buffer_channel, integration, activate=activate)
+            self.apply_remote(row, buffer_channel, integration, activate=activate)
             sort_order += 1
 
         integration.last_sync_at = datetime.now(timezone.utc)
@@ -463,7 +805,7 @@ class IntegrationService:
         )
         return {"created": created, "updated": updated, "skipped": skipped}
 
-    def _apply_remote(
+    def apply_remote(
         self,
         row: Channel,
         buffer_channel: BufferChannel,
@@ -481,8 +823,10 @@ class IntegrationService:
             row.avatar = buffer_channel.avatar
         row.is_locked = buffer_channel.locked
         row.queue_paused = buffer_channel.queue_paused
-        row.capabilities_json = json.dumps(["text", buffer_channel.service])
+        row.capabilities_json = json.dumps(channel_capabilities(buffer_channel.service))
         row.last_synced_at = datetime.now(timezone.utc)
+        row.archived_at = None
+        row.archived_reason = None
 
         if buffer_channel.disconnected:
             row.connection_status = "reauth_required"
@@ -566,7 +910,29 @@ class IntegrationService:
                 details=[{"reason": "Buffer has this channel locked. Locked channels cannot receive posts."}],
             )
 
-        return self._client_for(integration), channel.external_channel_id
+        return self.client_for(integration), channel.external_channel_id
+
+
+def channel_capabilities(platform: str) -> list[str]:
+    """What this channel's platform can actually accept.
+
+    The audit found this column being written as ``["text", <platform name>]``:
+    the platform name is not a capability, and nothing read the field anyway.
+    It is now derived from the single capability model, so it means something
+    and stays correct when the matrix changes.
+    """
+    from app.services import platforms as platform_model
+
+    spec = platform_model.spec_for(platform)
+    out = ["text"]
+    if spec.supports_image:
+        out.append("image")
+    if spec.supports_video:
+        out.append("video")
+    if spec.supports_carousel:
+        out.append("carousel")
+    out.extend(f"type:{key}" for key in spec.available_post_types())
+    return out
 
 
 def map_buffer_error(exc: BufferApiError) -> ErrorCode:

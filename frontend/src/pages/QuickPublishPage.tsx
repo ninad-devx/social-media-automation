@@ -4,14 +4,22 @@ import { DateTime } from "luxon";
 import { Card, Button, Field, Badge } from "../components/ui";
 import { AccountChannelSelectors } from "../components/quick-publish/AccountChannelSelectors";
 import { MediaPicker } from "../components/quick-publish/MediaPicker";
-import { SchedulePicker, buildScheduledAt, isFuture } from "../components/quick-publish/SchedulePicker";
+import {
+  SchedulePicker,
+  buildScheduledAt,
+  isFuture,
+  nextSensibleSlot,
+} from "../components/quick-publish/SchedulePicker";
+import { PostTypePicker } from "../components/quick-publish/PostTypePicker";
 import { PostPreview } from "../components/quick-publish/PostPreview";
 import { PublishError, PublishSuccess } from "../components/quick-publish/PublishFeedback";
 import { useAccounts } from "../hooks/useAccounts";
 import { useChannels } from "../hooks/useChannels";
 import { usePublish } from "../hooks/usePublish";
+import { usePlatformCapability } from "../hooks/usePlatformCapability";
 import { campaignsApi } from "../services/ai";
 import { platformMeta } from "../lib/platforms";
+import { channelStatus } from "../types/channel";
 import type { MediaItem, PublishMode } from "../types/publishing";
 
 const DEFAULT_TIMEZONE = import.meta.env.VITE_DEFAULT_TIMEZONE ?? "Asia/Dhaka";
@@ -23,34 +31,24 @@ interface DraftRow {
   channel_id: string;
   content: string;
   media: Array<{ type?: string; url?: string; alt_text?: string | null }>;
+  post_type: string | null;
 }
 
 export function QuickPublishPage() {
-  const { data: accounts } = useAccounts();
+  const { data: accounts, loading: accountsLoading } = useAccounts();
 
   const [accountId, setAccountId] = useState<string | null>(null);
   const [channelId, setChannelId] = useState<string | null>(null);
   const [content, setContent] = useState("");
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [publishMode, setPublishMode] = useState<PublishMode>("NOW");
+  const [postType, setPostType] = useState<string | null>(null);
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [timezone, setTimezone] = useState(DEFAULT_TIMEZONE);
 
   const { channels } = useChannels(accountId);
   const { publishing, result, error, publish, reset } = usePublish();
-
-  // Preselect the first account once, so the page is usable immediately.
-  useEffect(() => {
-    if (!accountId && accounts?.length) setAccountId(accounts[0].id);
-  }, [accounts, accountId]);
-
-  // Changing account invalidates the channel: refetch and clear.
-  const onAccountChange = (id: string) => {
-    setAccountId(id);
-    setChannelId(null);
-    reset();
-  };
 
   const channel = useMemo(
     () => channels.find((c) => c.id === channelId) ?? null,
@@ -62,30 +60,77 @@ export function QuickPublishPage() {
   );
 
   const meta = platformMeta(channel?.platform);
+  const { capability } = usePlatformCapability(channel?.platform);
+  const channelHealth = channel ? channelStatus(channel) : null;
   const trimmedLength = content.trim().length;
+
+  // Preselect the first account once, so the page is usable immediately.
+  useEffect(() => {
+    if (!accountId && accounts?.length) setAccountId(accounts[0].id);
+  }, [accounts, accountId]);
 
   // Default a future date/time the moment scheduling is chosen.
   useEffect(() => {
     if (publishMode !== "SCHEDULE") return;
     if (date && time) return;
-    const soon = DateTime.now().plus({ hours: 2 }).setZone(timezone);
-    if (soon.minute < 30) soon.plus({ minutes: 30 - soon.minute }).startOf("hour");
-    else soon.plus({ minutes: 5 }).startOf("minute");
-    setDate(soon.toFormat("yyyy-MM-dd"));
-    setTime(soon.toFormat("HH:mm"));
+    const slot = nextSensibleSlot(timezone);
+    setDate(slot.date);
+    setTime(slot.time);
   }, [publishMode, date, time, timezone]);
 
   const minDate = DateTime.now().toFormat("yyyy-MM-dd");
 
-  // ---- client-side gating, mirroring the backend's rules ---------------
+  // ---- gating, all derived from the backend's rules ---------------------
   const scheduleValid = publishMode === "NOW" || isFuture(date, time, timezone);
   const contentValid = trimmedLength > 0;
-  const mediaValid = !meta.requiresMedia || media.length > 0;
-  const canSubmit =
-    Boolean(accountId) && Boolean(channelId) && contentValid && mediaValid && scheduleValid && !publishing;
 
-  const fieldError = (field: string) =>
-    error?.field === field ? error.message : null;
+  // Eligibility is the backend's verdict, not a re-derivation. The backend
+  // refuses the publish anyway; this only avoids letting the user get that far.
+  const channelUsable = Boolean(channel?.publishable);
+  const channelBlockReason = channelHealth?.detail ?? null;
+
+  // Media rules come from the capability endpoint, so they cannot drift from
+  // what the API will accept.
+  const requiredMedia = capability?.requires_media ?? false;
+  const maxAssets = resolveMaxAssets(capability, postType);
+  const mediaValid = media.length > 0 || !requiredMedia;
+  const mediaCountValid = maxAssets === null || media.length <= maxAssets;
+  const textValid = capability?.text_limit == null || trimmedLength <= capability.text_limit;
+
+  const postTypeSupported =
+    postType === null ||
+    capability === null ||
+    capability.post_types.some((t) => t.key === postType);
+
+  const postTypeSpec = postType
+    ? (capability?.post_types.find((t) => t.key === postType) ?? null)
+    : null;
+  const scheduleOnly = Boolean(postTypeSpec?.requires_schedule);
+
+  // A type that requires scheduling cannot be shared immediately.
+  useEffect(() => {
+    if (scheduleOnly && publishMode === "NOW") setPublishMode("SCHEDULE");
+  }, [scheduleOnly, publishMode]);
+
+  // Reset the post type when the channel changes: a reel on one platform is
+  // meaningless on the next, and the capability list differs.
+  useEffect(() => {
+    setPostType(null);
+  }, [channelId]);
+
+  const canSubmit =
+    Boolean(accountId) &&
+    Boolean(channelId) &&
+    contentValid &&
+    mediaValid &&
+    mediaCountValid &&
+    textValid &&
+    postTypeSupported &&
+    scheduleValid &&
+    channelUsable &&
+    !publishing;
+
+  const fieldError = (field: string) => (error?.field === field ? error.message : null);
 
   const submit = () => {
     if (!canSubmit || !accountId || !channelId) return;
@@ -97,6 +142,7 @@ export function QuickPublishPage() {
       publish_mode: publishMode,
       scheduled_at: publishMode === "SCHEDULE" ? buildScheduledAt(date, time, timezone) : null,
       timezone,
+      post_type: postType,
     });
   };
 
@@ -107,8 +153,6 @@ export function QuickPublishPage() {
   };
 
   /* ---- draft campaign ------------------------------------------------- */
-  // Compose a post per channel, then name the campaign and save it. It shows
-  // up in Campaigns where it can be edited and given media before publishing.
   const [drafts, setDrafts] = useState<DraftRow[]>([]);
   const [draftName, setDraftName] = useState("");
   const [savingDraft, setSavingDraft] = useState(false);
@@ -128,10 +172,10 @@ export function QuickPublishPage() {
           channel_id: channelId,
           content: content.trim(),
           media: media.map((m) => ({ type: m.type, url: m.url, alt_text: m.alt_text })),
+          post_type: postType,
         },
       ];
     });
-    // Clear the composer so the next channel starts fresh.
     setContent("");
     setMedia([]);
     setDraftError(null);
@@ -143,6 +187,7 @@ export function QuickPublishPage() {
     setChannelId(row.channel_id);
     setContent(row.content);
     setMedia(row.media as MediaItem[]);
+    setPostType(row.post_type);
   };
 
   const saveDraftCampaign = async () => {
@@ -158,6 +203,7 @@ export function QuickPublishPage() {
           channel_id: d.channel_id,
           content: d.content,
           media: d.media,
+          post_type: d.post_type,
         })),
         targets: [],
       });
@@ -171,7 +217,7 @@ export function QuickPublishPage() {
     }
   };
 
-  const overLimit = meta.suggestedLimit !== null && trimmedLength > meta.suggestedLimit;
+  const overLimit = capability?.text_limit != null && trimmedLength > capability.text_limit;
 
   return (
     <div className="page page--publish">
@@ -204,15 +250,31 @@ export function QuickPublishPage() {
             <AccountChannelSelectors
               accountId={accountId}
               channelId={channelId}
-              onAccountChange={onAccountChange}
+              onAccountChange={(id) => {
+                setAccountId(id);
+                setChannelId(null);
+                reset();
+              }}
               onChannelChange={(id) => {
                 setChannelId(id);
                 reset();
               }}
             />
-            {channels.length === 0 && accountId && (
+            {accountsLoading && !accounts && <p className="publish__note">Loading accounts…</p>}
+            {accounts && accounts.length === 0 && accountId && (
               <p className="publish__note">
-                This account has no active channels yet. Add one in the backend to publish here.
+                No brands are available yet. Create one in Settings, then import its channels.
+              </p>
+            )}
+            {channels.length === 0 && accountId && !accountsLoading && (
+              <p className="publish__note">
+                This brand has no active channels yet. Import one from Settings → Buffer
+                Integrations.
+              </p>
+            )}
+            {channel && !channelUsable && channelBlockReason && (
+              <p className="notice notice--error" role="status">
+                {channelBlockReason}
               </p>
             )}
           </Card>
@@ -221,12 +283,27 @@ export function QuickPublishPage() {
             <div className="publish__section-head">
               <h2 className="publish__section-title">Your post</h2>
               {channel && (
-                <Badge tone="neutral">
+                <Badge tone={channelUsable ? "neutral" : "warning"}>
                   {meta.label}
-                  {meta.requiresMedia && " · media required"}
+                  {requiredMedia && " · media required"}
                 </Badge>
               )}
             </div>
+
+            {channel && (
+              <PostTypePicker
+                capability={capability}
+                value={postType}
+                onChange={(next) => {
+                  setPostType(next);
+                  reset();
+                }}
+                disabled={publishing}
+                error={
+                  error?.code === "POST_TYPE_UNSUPPORTED" ? error.message : null
+                }
+              />
+            )}
 
             <Field
               label="Content"
@@ -254,8 +331,8 @@ export function QuickPublishPage() {
                     aria-live="polite"
                   >
                     {trimmedLength.toLocaleString()}
-                    {meta.suggestedLimit !== null &&
-                      ` / ${meta.suggestedLimit.toLocaleString()} characters`}
+                    {capability?.text_limit != null &&
+                      ` / ${capability.text_limit.toLocaleString()} characters`}
                   </span>
                 </div>
               </div>
@@ -264,15 +341,28 @@ export function QuickPublishPage() {
             <div className="publish__media">
               <span className="selector__label" id="media-label">
                 Media
-                {meta.requiresMedia && <span className="field__optional">Required</span>}
+                {requiredMedia && <span className="field__optional">Required</span>}
               </span>
               <MediaPicker
                 media={media}
                 onChange={setMedia}
                 disabled={publishing}
-                requiresMedia={meta.requiresMedia}
+                requiresMedia={requiredMedia}
+                maxItems={maxAssets}
+                acceptsVideo={
+                  postTypeSpec ? postTypeSpec.allows_video : (capability?.supports_video ?? true)
+                }
+                acceptsImage={
+                  postTypeSpec ? postTypeSpec.allows_image : (capability?.supports_image ?? true)
+                }
                 error={fieldError("media") ?? (error?.code === "MEDIA_INVALID" ? error.message : null)}
               />
+              {!mediaCountValid && maxAssets !== null && (
+                <p className="field__error" role="alert">
+                  {meta.label} accepts at most {maxAssets} attachment
+                  {maxAssets === 1 ? "" : "s"} for this format. You have {media.length}.
+                </p>
+              )}
             </div>
           </Card>
 
@@ -286,11 +376,17 @@ export function QuickPublishPage() {
                 type="button"
                 className={`segmented__option ${publishMode === "NOW" ? "is-selected" : ""}`}
                 onClick={() => {
+                  if (scheduleOnly) return;
                   setPublishMode("NOW");
                   reset();
                 }}
                 aria-pressed={publishMode === "NOW"}
-                disabled={publishing}
+                disabled={publishing || scheduleOnly}
+                title={
+                  scheduleOnly
+                    ? `A ${postTypeSpec?.label} can only be scheduled.`
+                    : undefined
+                }
               >
                 <IconBolt />
                 Publish now
@@ -309,6 +405,12 @@ export function QuickPublishPage() {
                 Schedule
               </button>
             </div>
+
+            {scheduleOnly && (
+              <p className="publish__note">
+                A {postTypeSpec?.label} is always scheduled, so it cannot be shared immediately.
+              </p>
+            )}
 
             {publishMode === "SCHEDULE" && (
               <div className="publish__schedule">
@@ -334,6 +436,11 @@ export function QuickPublishPage() {
                     reset();
                   }}
                 />
+                <p className="publish__note">
+                  Scheduled posts are handed to Buffer with a due time; Buffer publishes them.
+                  This app has no scheduler of its own and does not re-check whether they went
+                  out.
+                </p>
               </div>
             )}
           </Card>
@@ -352,6 +459,7 @@ export function QuickPublishPage() {
               content={content}
               media={media}
               publishMode={publishMode}
+              postType={postType ?? capability?.default_post_type ?? null}
               date={date}
               time={time}
               timezone={timezone}
@@ -383,15 +491,31 @@ export function QuickPublishPage() {
               </Button>
 
               {!canSubmit && !publishing && (
-                <p className="publish__blocker">{blockerReason({
-                  accountId, channelId, contentValid, mediaValid, scheduleValid,
-                  requiresMedia: meta.requiresMedia, publishMode,
-                })}</p>
+                <p className="publish__blocker" role="status">
+                  {blockerReason({
+                    accountId,
+                    channelId,
+                    contentValid,
+                    mediaValid,
+                    mediaCountValid,
+                    maxAssets,
+                    mediaCount: media.length,
+                    textValid,
+                    scheduleValid,
+                    requiredMedia,
+                    publishMode,
+                    channelUsable,
+                    channelBlockReason,
+                    postTypeSupported,
+                    scheduleOnly,
+                    postTypeLabel: postTypeSpec?.label ?? null,
+                  })}
+                </p>
               )}
             </div>
 
             <p className="publish__footnote">
-              Publishing runs through your configured n8n workflow and Buffer.
+              Publishing goes through your configured engine and Buffer.
             </p>
 
             {(drafts.length > 0 || draftSaved) && (
@@ -415,13 +539,16 @@ export function QuickPublishPage() {
                 <ul className="draft-list">
                   {drafts.map((row) => {
                     const info = platformMeta(
-                      channels.find((c) => c.id === row.channel_id)?.platform
+                      channels.find((c) => c.id === row.channel_id)?.platform,
                     );
                     return (
                       <li key={row.key} className="draft-list__row">
                         <div className="draft-list__meta">
                           <Badge tone="info">{info.label}</Badge>
                           <span className="muted">{row.content.slice(0, 60)}</span>
+                          {row.post_type && (
+                            <Badge tone="neutral">{row.post_type.replace(/_/g, " ")}</Badge>
+                          )}
                           {row.media.length > 0 && (
                             <span className="muted">{row.media.length} media</span>
                           )}
@@ -475,22 +602,53 @@ export function QuickPublishPage() {
   );
 }
 
+/** The platform's own limit, narrowed by the chosen post type when it has one. */
+function resolveMaxAssets(
+  capability: ReturnType<typeof usePlatformCapability>["capability"],
+  postType: string | null,
+): number | null {
+  if (!capability) return null;
+  if (postType) {
+    const spec = capability.post_types.find((t) => t.key === postType);
+    if (spec && spec.max_assets !== null) return spec.max_assets;
+  }
+  return capability.max_assets;
+}
+
 function blockerReason(s: {
   accountId: string | null;
   channelId: string | null;
   contentValid: boolean;
   mediaValid: boolean;
+  mediaCountValid: boolean;
+  mediaCount: number;
+  maxAssets: number | null;
+  textValid: boolean;
   scheduleValid: boolean;
-  requiresMedia: boolean;
+  requiredMedia: boolean;
   publishMode: PublishMode;
+  channelUsable: boolean;
+  channelBlockReason: string | null;
+  postTypeSupported: boolean;
+  scheduleOnly: boolean;
+  postTypeLabel: string | null;
 }): string | null {
   if (!s.accountId) return "Choose an account to continue.";
   if (!s.channelId) return "Choose a channel to continue.";
+  if (!s.channelUsable) return s.channelBlockReason ?? "This channel cannot publish right now.";
+  if (!s.postTypeSupported) return "Choose a format this channel supports.";
   if (!s.contentValid) return "Write something to publish.";
+  if (!s.textValid) return "Shorten the post to fit this channel's character limit.";
   if (!s.mediaValid)
-    return s.requiresMedia
+    return s.requiredMedia
       ? "This channel needs at least one image or video."
-      : "";
+      : null;
+  if (!s.mediaCountValid)
+    return s.maxAssets === null
+      ? null
+      : `This format takes at most ${s.maxAssets} attachment${s.maxAssets === 1 ? "" : "s"}. You have ${s.mediaCount}.`;
+  if (s.scheduleOnly && s.publishMode === "NOW")
+    return `A ${s.postTypeLabel} can only be scheduled.`;
   if (!s.scheduleValid) return "Choose a future date and time.";
   return null;
 }

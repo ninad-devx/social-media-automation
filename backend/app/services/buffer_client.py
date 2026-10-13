@@ -26,6 +26,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.services import publishing_guard as guard
 
 logger = get_logger("app.buffer")
 
@@ -211,6 +212,15 @@ class BufferClient:
     def _http(self) -> httpx.Client:
         if self._client is not None:
             return self._client
+        # Seam where a REAL network client is about to be built. Tests inject a
+        # mock transport by overriding this method, so they never reach this
+        # line; anything that does is genuinely about to talk to Buffer.
+        guard.assert_allowed(
+            "buffer.request",
+            self._settings.buffer_api_base_url,
+            kind=guard.READ,
+            detail="Buffer client opened a real outbound connection.",
+        )
         return httpx.Client(
             timeout=self._settings.buffer_timeout_seconds,
             verify=self._settings.n8n_verify_tls,
@@ -362,7 +372,19 @@ class BufferClient:
 
         Mirrors the payload the existing n8n workflow already sends, so turning
         on direct publishing does not change what Buffer receives.
+
+        This is the single semantic write point against Buffer. Everything that
+        can create, schedule or modify a post funnels through here, so this is
+        where the publishing guard is armed regardless of which transport is
+        used underneath.
         """
+        guard.assert_allowed(
+            "buffer.create_post",
+            f"buffer channel {channel_id}",
+            kind=guard.WRITE,
+            detail=f"mode={'shareNow' if scheduled_local is None else 'customScheduled'}",
+        )
+
         now_mode = scheduled_local is None
 
         assets: list[dict[str, Any]] = []

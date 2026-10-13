@@ -21,6 +21,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.services import publishing_guard as guard
 from app.services.errors import ErrorCode, normalize_upstream_code
 
 logger = get_logger("app.n8n")
@@ -68,6 +69,19 @@ class N8nService:
         """
         if not self.is_configured():
             return N8nResult(success=False, upstream_code=ErrorCode.PUBLISHING_UNAVAILABLE)
+
+        # Handing the request to n8n is the start of a real publish. Guarded
+        # here so the n8n hop can never be reached while the guard is armed,
+        # independent of the transport used underneath.
+        try:
+            guard.assert_allowed(
+                "n8n.publish",
+                self._url,
+                kind=guard.WRITE,
+                detail=str((payload or {}).get("publish_mode") or "NOW"),
+            )
+        except guard.PublishingBlocked:
+            raise
 
         try:
             with httpx.Client(
@@ -150,6 +164,15 @@ class N8nService:
         if not self.is_configured():
             return {"configured": False, "reachable": False}
         try:
+            guard.assert_allowed(
+                "n8n.health",
+                self._url,
+                kind=guard.READ,
+                detail="reachability probe",
+            )
+        except guard.PublishingBlocked as exc:
+            return {"configured": True, "reachable": False, "error": "blocked_by_publishing_guard", "detail": str(exc)}
+        try:
             with httpx.Client(timeout=5.0, verify=self._settings.n8n_verify_tls) as client:
                 # n8n answers 405/404 for GET on a POST webhook, which still
                 # proves the host is up and reachable.
@@ -162,13 +185,23 @@ class N8nService:
 def build_n8n_payload(request: dict[str, Any]) -> dict[str, Any]:
     """Translate our request into the n8n workflow's contract.
 
-    The field names are identical; this function exists so that any future
-    divergence is handled in exactly one place.
+    `request_id` is forwarded deliberately. The workflow already accepts one -
+    its validation node reads `body.request_id` and only generates a ULID when
+    none is supplied - so forwarding it is what lets the callback at
+    /internal/publish update the history row this request created instead of
+    writing a second, unrelated one. Before this, the workflow invented its own
+    id, which is exactly why every publish produced two history rows that could
+    not be recognised as the same attempt.
     """
     return {
+        # Optional on the way in so an older caller cannot break, but always
+        # present on the wire: the workflow uses it when given and the history
+        # correlation depends on it.
+        "request_id": request.get("request_id"),
         "account_id": request["account_id"],
         "channel_id": request["channel_id"],
         "content": request["content"],
+        "post_type": request.get("post_type"),
         "media": [
             {"type": m["type"], "url": m["url"], **({"alt_text": m["alt_text"]} if m.get("alt_text") else {})}
             for m in request.get("media", [])

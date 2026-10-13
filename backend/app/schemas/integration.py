@@ -117,9 +117,16 @@ class ChannelSyncOut(BaseModel):
 
 
 class ChannelBinding(BaseModel):
-    """Manual binding, used when automatic discovery is unavailable."""
+    """Manual binding, used when automatic discovery is unavailable.
+
+    `integration_id` is required. There is deliberately no "pick one for me":
+    the integration is what supplies the credential and the workspace, and
+    guessing it is how a channel ends up looking linked while being unable to
+    publish.
+    """
 
     account_id: str = Field(min_length=1, max_length=64)
+    integration_id: str = Field(min_length=1, max_length=64)
     external_channel_id: str = Field(min_length=1, max_length=160)
     platform: str = Field(min_length=1, max_length=32)
     display_name: str | None = Field(default=None, max_length=120)

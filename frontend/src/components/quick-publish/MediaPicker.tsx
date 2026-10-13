@@ -1,9 +1,14 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { MediaItem, MediaType } from "../../types/publishing";
-import { uploadMedia, deleteMedia, type UploadedMedia } from "../../services/media";
+import {
+  MAX_UPLOAD_BYTES,
+  deleteMedia,
+  uploadMediaWithHandle,
+  type UploadHandle,
+} from "../../services/media";
 
-const ACCEPTED = "image/png,image/jpeg,image/webp,image/gif,video/mp4,video/quicktime,video/webm";
-const MAX_BYTES = 25 * 1024 * 1024;
+const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
+const VIDEO_ACCEPT = "video/mp4,video/quicktime,video/webm";
 
 interface Pending {
   id: string;
@@ -22,6 +27,11 @@ interface Pending {
  * Both produce the same `MediaItem`, so everything downstream - the preview,
  * the publish request, the n8n workflow - is identical.
  *
+ * `maxItems` is the platform's real limit, supplied by the capability endpoint.
+ * The previous default of 10 let the operator attach ten images to LinkedIn or
+ * YouTube, which accept exactly one, and the failure only appeared after
+ * writing the post.
+ *
  * Buffer downloads media from a URL, so a locally uploaded file needs a
  * publicly reachable address before it can actually be published. The backend
  * tells us whether the returned URL qualifies, and we surface that here
@@ -34,55 +44,112 @@ export function MediaPicker({
   error,
   requiresMedia = false,
   maxItems = 10,
+  acceptsImage = true,
+  acceptsVideo = true,
 }: {
   media: MediaItem[];
   onChange: (media: MediaItem[]) => void;
   disabled?: boolean;
   error?: string | null;
   requiresMedia?: boolean;
-  maxItems?: number;
+  maxItems?: number | null;
+  acceptsImage?: boolean;
+  acceptsVideo?: boolean;
 }) {
   const [pending, setPending] = useState<Pending[]>([]);
   const [urlDraft, setUrlDraft] = useState("");
-  const [urlType, setUrlType] = useState<MediaType>("image");
+  const [urlType, setUrlType] = useState<MediaType>(acceptsVideo && !acceptsImage ? "video" : "image");
   const [notice, setNotice] = useState<string | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const full = media.length >= maxItems;
+  // In-flight uploads, so unmount can cancel them. Without this, navigating
+  // away mid-upload left the request running and then setState on a dead
+  // component.
+  const inFlight = useRef<Set<UploadHandle>>(new Set());
+  useEffect(() => {
+    const handles = inFlight.current;
+    return () => {
+      for (const handle of handles) handle.cancel();
+      handles.clear();
+    };
+  }, []);
+
+  // Object URLs are revoked when the row disappears. They pin the whole file in
+  // memory, so a page with a few 25 MB uploads was leaking hundreds of MB.
+  useEffect(() => {
+    const urls = pending.map((p) => p.previewUrl).filter(Boolean);
+    return () => {
+      for (const url of urls) URL.revokeObjectURL(url);
+    };
+  }, [pending]);
+
+  const limit = maxItems === null || maxItems === undefined ? Number.MAX_SAFE_INTEGER : maxItems;
+  const full = media.length >= limit;
+
+  const accept = [acceptsImage && IMAGE_ACCEPT, acceptsVideo && VIDEO_ACCEPT]
+    .filter(Boolean)
+    .join(",");
+  const acceptLabel = [
+    acceptsImage ? "PNG, JPG, GIF, WEBP" : null,
+    acceptsVideo ? "MP4" : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
 
   // ---- uploads ------------------------------------------------------------
   async function handleFiles(files: FileList | File[]) {
     setLocalError(null);
     setNotice(null);
 
-    const room = maxItems - media.length;
-    if (room <= 0) return;
+    const room = limit - media.length;
+    if (room <= 0) {
+      setLocalError(`This channel takes at most ${limit} attachment${limit === 1 ? "" : "s"}.`);
+      return;
+    }
 
     for (const file of Array.from(files).slice(0, room)) {
-      if (file.size > MAX_BYTES) {
-        setLocalError(`${file.name} is larger than 25 MB.`);
+      const isImage = file.type.startsWith("image/");
+      const isVideo = file.type.startsWith("video/");
+
+      if (file.size > MAX_UPLOAD_BYTES) {
+        setLocalError(
+          `${file.name} is ${formatBytes(file.size)}. The limit is ${formatBytes(MAX_UPLOAD_BYTES)}.`,
+        );
         continue;
       }
-      if (!file.type.startsWith("image/") && !file.type.startsWith("video/")) {
+      if (!isImage && !isVideo) {
         setLocalError(`${file.name} isn't a supported image or video.`);
+        continue;
+      }
+      if (isImage && !acceptsImage) {
+        setLocalError(`${file.name} is an image, which this format does not accept.`);
+        continue;
+      }
+      if (isVideo && !acceptsVideo) {
+        setLocalError(`${file.name} is a video, which this format does not accept.`);
         continue;
       }
 
       const id = `${file.name}-${file.size}-${file.lastModified}`;
-      const previewUrl = file.type.startsWith("image/")
-        ? URL.createObjectURL(file)
-        : "";
+      const previewUrl = isImage ? URL.createObjectURL(file) : "";
 
       setPending((p) => [...p, { id, name: file.name, percent: 0, previewUrl }]);
 
+      const handle = uploadMediaWithHandle(file, (progress) => {
+        setPending((p) =>
+          p.map((item) => (item.id === id ? { ...item, percent: progress.percent } : item)),
+        );
+      });
+      inFlight.current.add(handle);
+
       try {
-        const uploaded: UploadedMedia = await uploadMedia(file, (progress) => {
-          setPending((p) =>
-            p.map((item) => (item.id === id ? { ...item, percent: progress.percent } : item)),
-          );
-        });
+        const uploaded = await handle.promise;
+
+        if (!uploaded || typeof uploaded.kind !== "string") {
+          throw new Error("The upload finished but the server sent back nothing usable.");
+        }
 
         const kind = uploaded.kind as MediaType;
         onChange([
@@ -105,6 +172,7 @@ export function MediaPicker({
           err instanceof Error ? err.message : `We couldn't upload ${file.name}.`,
         );
       } finally {
+        inFlight.current.delete(handle);
         setPending((p) => p.filter((item) => item.id !== id));
       }
     }
@@ -125,6 +193,18 @@ export function MediaPicker({
       setLocalError("That link is already attached.");
       return;
     }
+    if (mediaRef.current.length >= limit) {
+      setLocalError(`This channel takes at most ${limit} attachment${limit === 1 ? "" : "s"}.`);
+      return;
+    }
+    if (urlType === "image" && !acceptsImage) {
+      setLocalError("This format does not accept images.");
+      return;
+    }
+    if (urlType === "video" && !acceptsVideo) {
+      setLocalError("This format does not accept videos.");
+      return;
+    }
     onChange([...mediaRef.current, { type: urlType, url }]);
     setUrlDraft("");
     setLocalError(null);
@@ -136,7 +216,12 @@ export function MediaPicker({
       try {
         await deleteMedia(item.asset_id);
       } catch {
-        /* the post is already detached; a stale file is harmless */
+        // The post is already detached. An orphaned file is harmless, but the
+        // failure used to be swallowed with no trace at all, so it is noted.
+        setNotice(
+          "The attachment was removed from this post, but its stored file could not be " +
+            "deleted. You can remove it from the media library later.",
+        );
       }
     }
   };
@@ -148,7 +233,7 @@ export function MediaPicker({
       <input
         ref={inputRef}
         type="file"
-        accept={ACCEPTED}
+        accept={accept}
         multiple
         hidden
         onChange={(e) => {
@@ -156,6 +241,12 @@ export function MediaPicker({
           e.target.value = "";
         }}
       />
+
+      {full && limit !== Number.MAX_SAFE_INTEGER && (
+        <p className="field__hint">
+          This channel takes at most {limit} attachment{limit === 1 ? "" : "s"}.
+        </p>
+      )}
 
       {!full && (
         <>
@@ -179,9 +270,12 @@ export function MediaPicker({
               <IconUpload />
             </span>
             <span className="dropzone__title">
-              Drop an image or video here, or <span className="dropzone__link">browse</span>
+              Drop {acceptsImage && acceptsVideo ? "an image or video" : acceptsVideo ? "a video" : "an image"}{" "}
+              here, or <span className="dropzone__link">browse</span>
             </span>
-            <span className="dropzone__hint">PNG, JPG, GIF, WEBP, MP4 · up to 25 MB</span>
+            <span className="dropzone__hint">
+              {acceptLabel} · up to {formatBytes(MAX_UPLOAD_BYTES)}
+            </span>
           </button>
 
           <div className="media__divider">
@@ -192,12 +286,12 @@ export function MediaPicker({
             <select
               className="input media__type"
               value={urlType}
-              disabled={disabled}
+              disabled={disabled || (!acceptsImage && !acceptsVideo)}
               onChange={(e) => setUrlType(e.target.value as MediaType)}
               aria-label="Media type"
             >
-              <option value="image">Image</option>
-              <option value="video">Video</option>
+              {acceptsImage && <option value="image">Image</option>}
+              {acceptsVideo && <option value="video">Video</option>}
             </select>
             <input
               className="input"
@@ -250,8 +344,8 @@ export function MediaPicker({
 
       {media.length > 0 && (
         <ul className="media__list">
-          {media.map((item) => (
-            <li key={item.url} className="media__item">
+          {media.map((item, index) => (
+            <li key={`${item.url}-${index}`} className="media__item">
               <span className="media__thumb">
                 {item.type === "image" ? (
                   <img
@@ -316,6 +410,12 @@ function filename(url: string): string {
   } catch {
     return url;
   }
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} bytes`;
 }
 
 function IconUpload() {

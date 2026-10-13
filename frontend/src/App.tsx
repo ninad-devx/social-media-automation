@@ -36,15 +36,20 @@ export default function App() {
           <Route path="campaigns/:campaignId" element={<CampaignDetailPage />} />
           <Route path="accounts" element={<AccountsPage />} />
 
-          {/* Settings is a tabbed layout; each tab is its own route. */}
+          {/*
+            Settings is a tabbed layout and every tab is its own route.
+
+            /settings/ai used to be declared as a SIBLING of this layout rather
+            than a child. React Router ranks the more specific path higher, so it
+            matched, and clicking the tab dropped the Settings header and tab
+            strip entirely.
+          */}
           <Route path="settings" element={<SettingsLayout />}>
             <Route index element={<SettingsOverview />} />
             <Route path="integrations" element={<BufferIntegrationsPage />} />
             <Route path="accounts" element={<AccountsChannelsPage />} />
+            <Route path="ai" element={<AiSettingsPage />} />
           </Route>
-
-          {/* AI settings keeps its own page and its own URL. */}
-          <Route path="settings/ai" element={<AiSettingsPage />} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>

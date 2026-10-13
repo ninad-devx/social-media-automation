@@ -23,6 +23,7 @@ class ErrorCode:
     SCHEDULE_TOO_FAR = "SCHEDULE_TOO_FAR"
     MEDIA_INVALID = "MEDIA_INVALID"
     MEDIA_NOT_ACCESSIBLE = "MEDIA_NOT_ACCESSIBLE"
+    POST_TYPE_UNSUPPORTED = "POST_TYPE_UNSUPPORTED"
     BUFFER_POST_FAILED = "BUFFER_POST_FAILED"
 
     # --- configuration resolution ------------------------------------------
@@ -58,9 +59,16 @@ class ErrorCode:
     CHANNEL_REAUTH_REQUIRED = "CHANNEL_REAUTH_REQUIRED"
     CHANNEL_LOCKED = "CHANNEL_LOCKED"
     CHANNEL_ALREADY_ASSIGNED = "CHANNEL_ALREADY_ASSIGNED"
+    # ---- channel archival + binding -------------------------------------
+    CHANNEL_ARCHIVED = "CHANNEL_ARCHIVED"
+    CHANNEL_NOT_IN_INTEGRATION = "CHANNEL_NOT_IN_INTEGRATION"
+    INTEGRATION_REQUIRED_FOR_BINDING = "INTEGRATION_REQUIRED_FOR_BINDING"
+    PLATFORM_NOT_SUPPORTED = "PLATFORM_NOT_SUPPORTED"
+    BUFFER_WORKSPACE_SELECTION_REQUIRED = "BUFFER_WORKSPACE_SELECTION_REQUIRED"
     # ---- accounts (brands) ------------------------------------------------
     ACCOUNT_ID_EXHAUSTED = "ACCOUNT_ID_EXHAUSTED"
     ACCOUNT_STILL_HAS_CHANNELS = "ACCOUNT_STILL_HAS_CHANNELS"
+    ACCOUNT_HAS_HISTORY = "ACCOUNT_HAS_HISTORY"
     # ---- AI providers / generation ------------------------------------
     AI_NOT_CONFIGURED = "AI_NOT_CONFIGURED"
     AI_NO_PROVIDER = "AI_NO_PROVIDER"
@@ -82,6 +90,7 @@ class ErrorCode:
     AI_GENERATION_FAILED = "AI_GENERATION_FAILED"
 
     DUPLICATE_SUBMISSION = "DUPLICATE_SUBMISSION"
+    IDEMPOTENCY_KEY_REUSED = "IDEMPOTENCY_KEY_REUSED"
     UNAUTHORIZED = "UNAUTHORIZED"
     NOT_FOUND = "NOT_FOUND"
     INTERNAL_ERROR = "INTERNAL_ERROR"
@@ -105,7 +114,32 @@ USER_MESSAGES: dict[str, str] = {
         "reachable - a localhost or tunnel address changes or is blocked. Point "
         "PUBLIC_MEDIA_BASE_URL at stable public storage and upload again."
     ),
+    ErrorCode.POST_TYPE_UNSUPPORTED: (
+        "That post type isn't available on this channel. Pick one of the supported "
+        "formats for this platform."
+    ),
     ErrorCode.BUFFER_POST_FAILED: "The post was created but could not be delivered. Please check Buffer and retry.",
+    ErrorCode.CHANNEL_ARCHIVED: (
+        "This channel was archived and is no longer linked to Buffer. Restore or "
+        "remove it in Settings before using it again."
+    ),
+    ErrorCode.CHANNEL_NOT_IN_INTEGRATION: (
+        "That Buffer channel was not found in the selected workspace. Check the "
+        "channel id, or pick the workspace the profile actually lives in."
+    ),
+    ErrorCode.INTEGRATION_REQUIRED_FOR_BINDING: (
+        "Choose which Buffer integration this channel belongs to. A channel cannot "
+        "be linked without one, because that is what tells the app where to publish."
+    ),
+    ErrorCode.PLATFORM_NOT_SUPPORTED: (
+        "This publishing engine cannot publish to that platform. Pick a supported "
+        "platform, or connect a provider that supports it."
+    ),
+    ErrorCode.ACCOUNT_HAS_HISTORY: (
+        "This brand has publishing history, so deleting it would destroy that record. "
+        "Disable the brand instead - it disappears from every selector but the history "
+        "stays intact."
+    ),
     ErrorCode.ACCOUNT_NOT_FOUND: "That account no longer exists.",
     ErrorCode.ACCOUNT_INACTIVE: "That account is currently unavailable.",
     ErrorCode.CHANNEL_NOT_FOUND: "This social channel is currently unavailable.",
@@ -134,8 +168,28 @@ USER_MESSAGES: dict[str, str] = {
     ),
     ErrorCode.INTEGRATION_REAUTH_REQUIRED: "This connection needs to be re-authorised. Reconnect it in Settings.",
     ErrorCode.INTEGRATION_NO_CHANNELS_SELECTED: "Select at least one channel to import.",
+    ErrorCode.BUFFER_WORKSPACE_SELECTION_REQUIRED: (
+        "Choose which Buffer workspace to publish through. This token can reach "
+        "several, so nothing is connected until you pick one."
+    ),
     ErrorCode.CHANNEL_NOT_BOUND: (
         "This channel isn't linked to a publishing connection yet. Connect it in Settings."
+    ),
+    ErrorCode.CHANNEL_ARCHIVED: (
+        "This channel was archived and is no longer linked to Buffer. Restore or "
+        "remove it in Settings before using it again."
+    ),
+    ErrorCode.CHANNEL_NOT_IN_INTEGRATION: (
+        "That Buffer channel was not found in the selected workspace. Check the "
+        "channel id, or pick the workspace the profile actually lives in."
+    ),
+    ErrorCode.INTEGRATION_REQUIRED_FOR_BINDING: (
+        "Choose which Buffer integration this channel belongs to. A channel cannot "
+        "be linked without one, because that is what tells the app where to publish."
+    ),
+    ErrorCode.PLATFORM_NOT_SUPPORTED: (
+        "This publishing engine cannot publish to that platform. Pick a supported "
+        "platform, or connect a provider that supports it."
     ),
     ErrorCode.CHANNEL_REAUTH_REQUIRED: "Buffer reports this channel as disconnected. Reconnect it in Buffer.",
     ErrorCode.CHANNEL_LOCKED: "Buffer has this channel locked, so it cannot receive posts.",
@@ -143,10 +197,22 @@ USER_MESSAGES: dict[str, str] = {
         "That social profile is already linked to a different account. Remove it there first."
     ),
     ErrorCode.ACCOUNT_ID_EXHAUSTED: "Could not generate a unique id for that brand. Enter one manually.",
+    ErrorCode.ACCOUNT_HAS_HISTORY: (
+        "This brand has publishing history, so deleting it would destroy that record. "
+        "Disable the brand instead - it disappears from every selector but the history "
+        "stays intact."
+    ),
     ErrorCode.ACCOUNT_STILL_HAS_CHANNELS: (
         "This brand still has channels. Remove or disable them before deleting it."
     ),
-    ErrorCode.DUPLICATE_SUBMISSION: "This post was already submitted. Please wait before trying again.",
+    ErrorCode.DUPLICATE_SUBMISSION: (
+        "This exact request is already being sent. Wait for it to finish before "
+        "trying again."
+    ),
+    ErrorCode.IDEMPOTENCY_KEY_REUSED: (
+        "This request has already been published. Use a new request to publish "
+        "something different."
+    ),
     ErrorCode.AI_NOT_CONFIGURED: "The AI provider is not fully configured. Check Settings.",
     ErrorCode.AI_NO_PROVIDER: "No AI provider is configured. Add one in Settings to generate content.",
     ErrorCode.AI_PROVIDER_DISABLED: "That AI provider is disabled. Enable it in Settings.",

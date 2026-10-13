@@ -14,10 +14,9 @@ import { useAccounts } from "../hooks/useAccounts";
 
 import type { AiProvider, Campaign, CampaignPost, PostActionResult } from "../types/ai";
 
-import type { Channel } from "../types/channel";
+import { channelCaption, channelStatus, type Channel } from "../types/channel";
 
 import { platformMeta } from "../lib/platforms";
-
 
 import {
   mediaCapNote,
@@ -28,15 +27,14 @@ import {
 import { MediaPicker } from "../components/quick-publish/MediaPicker";
 import type { MediaItem } from "../types/publishing";
 
-
+/** Consecutive failed polls before we stop and tell the operator. */
+const MAX_POLL_ERRORS = 5;
 
 export function AiAutomationPage() {
 
   const navigate = useNavigate();
 
   const { data: accounts } = useAccounts();
-
-
 
   const [channels, setChannels] = useState<Channel[]>([]);
 
@@ -46,11 +44,13 @@ export function AiAutomationPage() {
 
   const [selected, setSelected] = useState<Record<string, string[]>>({});
 
+  /** Brands the operator wants to generate for. Defaults to the first brand. */
+  const [brandIds, setBrandIds] = useState<string[]>([]);
+
   const [providers, setProviders] = useState<AiProvider[]>([]);
 
   const [providerId, setProviderId] = useState("");
-
-
+  const [providerError, setProviderError] = useState<string | null>(null);
 
   const [topic, setTopic] = useState("");
 
@@ -65,8 +65,6 @@ export function AiAutomationPage() {
   const [language, setLanguage] = useState("en");
   const [generateImages, setGenerateImages] = useState(false);
 
-
-
   const [campaign, setCampaign] = useState<Campaign | null>(null);
 
   const [creating, setCreating] = useState(false);
@@ -76,8 +74,7 @@ export function AiAutomationPage() {
   const [error, setError] = useState<string | null>(null);
 
   const pollRef = useRef<number | null>(null);
-
-
+  const pollErrors = useRef(0);
 
   /* ---- loading ---- */
 
@@ -97,31 +94,53 @@ export function AiAutomationPage() {
 
       })
 
-      .catch(() => setProviders([]));
+      .catch((err) => {
+        // Previously the error was discarded and the Model picker simply
+        // vanished, with no explanation and no fallback shown.
+        setProviders([]);
+        setProviderError(
+          err instanceof Error
+            ? `Could not load AI providers: ${err.message}`
+            : "Could not load AI providers.",
+        );
+      });
 
   }, []);
 
-
-
+  // H10: the previous version hardcoded accounts[0].id, so a campaign could
+  // only ever be generated for the first brand no matter what the operator
+  // picked. Channels are now loaded per selected brand.
   useEffect(() => {
+    if (!accounts?.length) {
+      setChannels([]);
+      return;
+    }
 
-    if (!accounts?.length) return;
+    // Default to the first brand until the operator chooses others.
+    setBrandIds((prev) => (prev.length ? prev : [accounts[0].id]));
 
     const controller = new AbortController();
-
-    accountsApi
-
-      .channels(accounts[0].id, controller.signal)
-
-      .then(setChannels)
-
+    Promise.all(
+      (brandIds.length ? brandIds : [accounts[0].id]).map((id) =>
+        accountsApi.channels(id, controller.signal),
+      ),
+    )
+      .then((lists) => {
+        const merged: Channel[] = [];
+        const seen = new Set<string>();
+        for (const list of lists) {
+          for (const channel of list) {
+            if (seen.has(channel.id)) continue;
+            seen.add(channel.id);
+            merged.push(channel);
+          }
+        }
+        setChannels(merged);
+      })
       .catch(() => setChannels([]));
 
     return () => controller.abort();
-
-  }, [accounts]);
-
-
+  }, [accounts, brandIds]);
 
   const targets = useMemo(
 
@@ -137,8 +156,6 @@ export function AiAutomationPage() {
 
   );
 
-
-
   /* ---- generation polling ---- */
 
   const stopPolling = useCallback(() => {
@@ -153,8 +170,6 @@ export function AiAutomationPage() {
 
   }, []);
 
-
-
   const refresh = useCallback(
 
     async (id: string) => {
@@ -167,10 +182,22 @@ export function AiAutomationPage() {
 
         return fresh;
 
-      } catch {
-
-        return null;
-
+      } catch (err) {
+        // A single transient failure used to resolve to null, which the poll
+        // loop read as "nothing is generating" and stopped polling for good,
+        // leaving a half-generated board with no error shown.
+        pollErrors.current += 1;
+        if (pollErrors.current >= MAX_POLL_ERRORS) {
+          stopPolling();
+          setGenerating(false);
+          setError(
+            (err as Error)?.message ??
+              "Lost contact with the server while generating. Please start generation again.",
+          );
+        }
+        return undefined;
+      } finally {
+        pollErrors.current = 0;
       }
 
     },
@@ -178,8 +205,6 @@ export function AiAutomationPage() {
     []
 
   );
-
-
 
   const startGeneration = useCallback(
 
@@ -197,10 +222,11 @@ export function AiAutomationPage() {
 
           const fresh = await refresh(id);
 
-          const busy = fresh?.posts.some(
+          // `null` means the request failed; that is not the same as "finished".
+          if (fresh === null) return;
 
-            (p) => p.generation_status === "pending" || p.generation_status === "generating"
-
+          const busy = (fresh?.posts ?? []).some(
+            (p) => p.generation_status === "pending" || p.generation_status === "generating",
           );
 
           if (!busy) {
@@ -211,7 +237,7 @@ export function AiAutomationPage() {
 
           }
 
-        }, 1200);
+        }, 1500);
 
       } catch (err) {
 
@@ -227,11 +253,7 @@ export function AiAutomationPage() {
 
   );
 
-
-
   useEffect(() => stopPolling, [stopPolling]);
-
-
 
   /* ---- actions ---- */
 
@@ -254,8 +276,6 @@ export function AiAutomationPage() {
       return;
 
     }
-
-
 
     setCreating(true);
 
@@ -294,25 +314,25 @@ language,
 
   };
 
-
-
-  const onPostChanged = async (post: CampaignPost) => {
+  const onPostChanged = async (post?: CampaignPost) => {
 
     if (!campaign) return;
 
-    setCampaign({
+    if (post) {
+      setCampaign({
 
-      ...campaign,
+        ...campaign,
 
-      posts: campaign.posts.map((p) => (p.id === post.id ? post : p)),
+        posts: campaign.posts.map((p) => (p.id === post.id ? post : p)),
 
-    });
+      });
+    }
 
+    // Always refetch exactly once. Called with no argument after a bulk
+    // operation, so a 25-channel campaign issues one request rather than 25.
     await refresh(campaign.id);
 
   };
-
-
 
   if (!accounts?.length) {
 
@@ -333,8 +353,6 @@ language,
     );
 
   }
-
-
 
   return (
 
@@ -362,11 +380,7 @@ language,
 
       </header>
 
-
-
       {error && <Card className="notice notice--error">{error}</Card>}
-
-
 
       <div className="ai-layout">
 
@@ -379,8 +393,6 @@ language,
             description="Tell the model what this campaign is about."
 
           />
-
-
 
           <Field label="Topic" htmlFor="topic" hint="The main thing this campaign is about.">
 
@@ -398,8 +410,6 @@ language,
             />
 
           </Field>
-
-
 
           <Field
 
@@ -426,8 +436,6 @@ language,
 
           </Field>
 
-
-
           <Field label="Objective" htmlFor="objective">
 
             <input className="input"
@@ -443,23 +451,17 @@ language,
 
           </Field>
 
-
-
           <Field label="Tone adjustment" htmlFor="tone" hint="Applied on top of the brand voice.">
 
             <input className="input" id="tone" value={tone} onChange={(e) => setTone(e.target.value)} />
 
           </Field>
 
-
-
           <Field label="Call to action" htmlFor="cta">
 
             <input className="input" id="cta" value={cta} onChange={(e) => setCTA(e.target.value)} />
 
           </Field>
-
-
 
           <label className="checkbox" style={{ marginBottom: "var(--s-3)" }}>
             <input
@@ -500,26 +502,36 @@ language,
 
           </Field>
 
-
-
           <Field label="Publish to" htmlFor="channel-picker">
 
             <ChannelPicker
 
               channels={channels}
 
-              value={selected[accounts[0].id] ?? []}
+              value={brandIds.flatMap((id) => selected[id] ?? [])}
 
-              onChange={(channelIds) =>
-
-                setSelected({ ...selected, [accounts[0].id]: channelIds })
-
-              }
+              onChange={(channelIds) => {
+                // H10: the selection is stored per chosen brand, so a campaign
+                // can span brands instead of only ever the first one.
+                const first = brandIds[0];
+                setSelected(
+                  Object.fromEntries(
+                    brandIds.map((id) => [
+                      id,
+                      id === first ? channelIds : (selected[id] ?? []),
+                    ]),
+                  ),
+                );
+              }}
 
             />
 
           </Field>
-
+          {providerError && (
+            <p className="notice notice--error" role="status">
+              {providerError}
+            </p>
+          )}
 
 
           {providers.length > 0 && (
@@ -548,8 +560,6 @@ language,
 
           )}
 
-
-
           <Button
             variant="primary"
 
@@ -561,11 +571,9 @@ language,
 
           >
 
-            {generating ? "GeneratingÃ¢â‚¬Â¦" : campaign ? "Start a new campaign" : "Generate drafts"}
+            {generating ? "Generating..." : campaign ? "Start a new campaign" : "Generate drafts"}
 
           </Button>
-
-
 
           <p className="muted">
 
@@ -574,8 +582,6 @@ language,
           </p>
 
         </Card>
-
-
 
         <div className="ai-layout__main">
 
@@ -595,8 +601,6 @@ language,
 
           )}
 
-
-
           {campaign && (
 
             <CampaignBoard campaign={campaign} onChanged={onPostChanged} />
@@ -612,8 +616,6 @@ language,
   );
 
 }
-
-
 
 /* ------------------------------------------------------------------------ */
 
@@ -639,46 +641,57 @@ function ChannelPicker({
 
     onChange(value.includes(id) ? value.filter((c) => c !== id) : [...value, id]);
 
-
-
   if (!channels.length) return <p className="muted">No channels available.</p>;
-
-
 
   return (
 
     <ul className="checkbox-list">
 
-      {channels.map((c) => (
+      {channels.map((c) => {
+        // H3: the picker used to render a plain checkbox for every channel and
+        // read none of the backend's eligibility fields, so a locked or
+        // disconnected profile could be selected for generation and then fail
+        // at publish time. The verdict and its reason are both shown now.
+        const health = channelStatus(c);
+        const blocked = !c.publishable;
+        return (
+          <li key={c.id}>
 
-        <li key={c.id}>
+            <label className="checkbox" title={health.detail ?? undefined}>
 
-          <label className="checkbox">
+              <input
 
-            <input
-              type="checkbox"
+                type="checkbox"
 
-              checked={value.includes(c.id)}
+                checked={value.includes(c.id)}
 
-              onChange={() => toggle(c.id)}
+                disabled={blocked}
 
-            />
+                onChange={() => toggle(c.id)}
 
-            <span>{c.display_name ?? c.id}</span>
+              />
 
-          </label>
+              <span title={channelCaption(c)}>{channelCaption(c)}</span>
 
-        </li>
+              <Badge tone={health.tone}>{health.label}</Badge>
 
-      ))}
+            </label>
+
+            {blocked && health.detail && (
+
+              <p className="muted small">{health.detail}</p>
+
+            )}
+
+          </li>
+        );
+      })}
 
     </ul>
 
   );
 
 }
-
-
 
 /* ------------------------------------------------------------------------ */
 
@@ -692,17 +705,23 @@ export function CampaignBoard({
 
   campaign: Campaign;
 
-  onChanged: (post: CampaignPost) => void | Promise<void>;
+  onChanged: (post?: CampaignPost) => void | Promise<void>;
 
 }) {
 
-  const [selected, setSelected] = useState<string[]>([]);
+  // H9: keyed by campaign id so navigating from one campaign to another can
+  // never carry the previous campaign's post ids into a publish.
+  const [selection, setSelection] = useState<{ campaignId: string; ids: string[] }>({
+    campaignId: campaign.id,
+    ids: [],
+  });
+  const selected = selection.campaignId === campaign.id ? selection.ids : [];
 
   const [results, setResults] = useState<PostActionResult[]>([]);
 
   const [busy, setBusy] = useState(false);
-
-
+  /** Bulk action failures, shown in the board rather than a native alert. */
+  const [boardError, setBoardError] = useState<string | null>(null);
 
   const publishable = campaign.posts.filter(
 
@@ -710,13 +729,12 @@ export function CampaignBoard({
 
   );
 
-
-
   const toggle = (id: string) =>
 
-    setSelected((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-
-
+    setSelection(({ ids }) => ({
+      campaignId: campaign.id,
+      ids: ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id],
+    }));
 
   const bulkPublish = async () => {
 
@@ -734,13 +752,17 @@ export function CampaignBoard({
 
       // Refresh every row so statuses reflect what Buffer actually accepted.
 
-      await Promise.all(campaign.posts.map((p) => onChanged(p)));
+      // H8: this used to call onChanged once per post in the campaign, so
+    // publishing 3 of 25 fired 25 identical GETs plus 25 writes from the same
+    // stale closure. One refetch is enough and is race-free.
+    await onChanged();
 
-      setSelected([]);
+      setSelection({ campaignId: campaign.id, ids: [] });
 
     } catch (err) {
 
-      window.alert((err as Error).message);
+      // A native modal blocked the UI and the message vanished on dismissal.
+      setBoardError((err as Error).message);
 
     } finally {
 
@@ -750,8 +772,6 @@ export function CampaignBoard({
 
   };
 
-
-
   return (
 
     <Card>
@@ -760,12 +780,21 @@ export function CampaignBoard({
 
         title={campaign.name || campaign.topic}
 
-        description={`${campaign.generated_count} generated Ã‚Â· ${campaign.failed_count} failed Ã‚Â· ${campaign.published_count} published`}
+        description={`${campaign.generated_count} generated · ${campaign.failed_count} failed · ${campaign.published_count} published`}
 
         action={<Badge tone={statusTone(campaign.status)}>{statusLabel(campaign.status)}</Badge>}
 
       />
 
+      {boardError && (
+
+        <p className="notice notice--error" role="status">
+
+          {boardError}
+
+        </p>
+
+      )}
 
 
       {results.length > 0 && (
@@ -804,12 +833,14 @@ export function CampaignBoard({
 
           >
 
-            Publish {selected.length || ""} selected
+            Publish {selected.length > 0 ? `${selected.length} ` : ""}selected
 
           </Button>
 
           <Button
-            onClick={() => setSelected(publishable.map((p) => p.id))}
+            onClick={() =>
+              setSelection({ campaignId: campaign.id, ids: publishable.map((p) => p.id) })
+            }
 
             disabled={selected.length === publishable.length}
 
@@ -819,7 +850,10 @@ export function CampaignBoard({
 
           </Button>
 
-          <Button onClick={() => setSelected([])} disabled={!selected.length}>
+          <Button
+            onClick={() => setSelection({ campaignId: campaign.id, ids: [] })}
+            disabled={!selected.length}
+          >
 
             Clear
 
@@ -828,8 +862,6 @@ export function CampaignBoard({
         </div>
 
       )}
-
-
 
       <PreviewGrid>
 
@@ -861,8 +893,6 @@ export function CampaignBoard({
 
 }
 
-
-
 /* ------------------------------------------------------------------------ */
 
 function PostCard({
@@ -887,7 +917,7 @@ function PostCard({
 
   onToggle: () => void;
 
-  onChanged: (post: CampaignPost) => void | Promise<void>;
+  onChanged: (post?: CampaignPost) => void | Promise<void>;
 
 }) {
 
@@ -904,10 +934,19 @@ function PostCard({
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
 
-
   useEffect(() => setText(post.effective_content), [post.effective_content]);
 
-
+  // M12: the editor text is resynced but the media list was not, so after a
+  // regenerate the card still showed - and saved back - the previous URLs.
+  useEffect(() => {
+    setMedia(
+      post.media.map((m) => ({
+        type: (m.type === "video" ? "video" : "image") as MediaItem["type"],
+        url: m.url ?? "",
+        alt_text: m.alt_text ?? null,
+      })),
+    );
+  }, [post.media]);
 
   const locked = post.publishing_status === "published" || post.publishing_status === "scheduled";
   const meta = platformMeta(post.platform);
@@ -923,7 +962,6 @@ function PostCard({
       .catch(() => setCaps(null));
     return () => controller.abort();
   }, [post.platform]);
-
 
   const run = async (key: string, fn: () => Promise<CampaignPost | void>) => {
 
@@ -948,8 +986,6 @@ function PostCard({
     }
 
   };
-
-
 
   const publish = async () => {
 
@@ -977,8 +1013,6 @@ function PostCard({
 
   };
 
-
-
   const canPublish =
 
     !locked &&
@@ -987,13 +1021,11 @@ function PostCard({
 
     post.effective_content.trim().length > 0 &&
 
-    (!meta.requiresMedia || post.media.length > 0);
-
-
+    (!caps?.requires_media || post.media.length > 0);
 
   return (
 
-    <PostPreviewCard post={post}>
+    <PostPreviewCard post={post} requiresMedia={Boolean(caps?.requires_media)}>
 
       {selectable && (
 
@@ -1007,13 +1039,9 @@ function PostCard({
 
       )}
 
-
-
       {post.error_message && <p className="notice notice--error">{post.error_message}</p>}
 
       {message && <p className="notice notice--error">{message}</p>}
-
-
 
       {post.validation_warnings.length > 0 && (
 
@@ -1028,8 +1056,6 @@ function PostCard({
         </ul>
 
       )}
-
-
 
       {editing ? (
         <div className="post-card__editor">
@@ -1077,12 +1103,11 @@ function PostCard({
         </div>
       )}
 
-
       <div className="row-actions">
 
         {locked ? (
 
-          <span className="muted">Locked â€” already sent.</span>
+          <span className="muted">Locked — already sent.</span>
 
         ) : (
 
@@ -1106,7 +1131,6 @@ function PostCard({
             {media.length ? "Change media" : "Add media"}
           </Button>
         )}
-
 
             <Button
               size="sm"
@@ -1132,8 +1156,6 @@ function PostCard({
               Regenerate
 
             </Button>
-
-
 
             {post.is_edited && (
 
@@ -1184,8 +1206,6 @@ function PostCard({
 
             )}
 
-
-
             <Button
               size="sm"
 
@@ -1201,8 +1221,6 @@ function PostCard({
 
             </Button>
 
-
-
             {canPublish ? (
 
               <Button size="sm" variant="primary" loading={busy === "publish"} onClick={publish}>
@@ -1213,7 +1231,7 @@ function PostCard({
 
             ) : (
 
-              meta.requiresMedia && post.media.length === 0 && (
+              caps?.requires_media && post.media.length === 0 && (
 
                 <span className="muted">
 
@@ -1237,8 +1255,6 @@ function PostCard({
 
 }
 
-
-
 function statusLabel(status: string) {
 
   const map: Record<string, string> = {
@@ -1258,8 +1274,6 @@ function statusLabel(status: string) {
   return map[status] ?? status;
 
 }
-
-
 
 function statusTone(status: string): "success" | "danger" | "warning" | "info" | "neutral" {
 

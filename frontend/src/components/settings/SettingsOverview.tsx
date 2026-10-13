@@ -58,8 +58,14 @@ export function SettingsOverview() {
     setError(null);
     try {
       setStatus(await systemApi.status(probe));
-    } catch {
-      setError("Could not read system status from the backend.");
+    } catch (err) {
+      // The message is kept, and rendered alongside the stale data below, so a
+      // failed refresh can never be mistaken for a healthy one.
+      setError(
+        err instanceof Error
+          ? `Could not refresh system status: ${err.message}`
+          : "Could not read system status from the backend.",
+      );
     } finally {
       setLoading(false);
     }
@@ -90,6 +96,16 @@ export function SettingsOverview() {
 
   return (
     <div className="stack">
+      {/* Rendered even when stale data is on screen. Previously the error was
+          only shown when there was no status at all, so a failed "Test n8n
+          connection" silently left the previous green badges in place. */}
+      {error && (
+        <div className="banner banner--danger" role="status">
+          {error}
+          {status && " Showing the last known status, which may be out of date."}
+        </div>
+      )}
+
       {status.issues.length > 0 && (
         <Card>
           <CardHeader
@@ -210,7 +226,7 @@ export function SettingsOverview() {
                   <StatusBadge
                     status={
                       status.n8n.reachable === null
-                        ? "not_configured"
+                        ? "not_checked"
                         : status.n8n.reachable
                           ? "connected"
                           : "connection_failed"

@@ -4,7 +4,7 @@ import { useChannels } from "../../hooks/useChannels";
 import { Select, type SelectOption } from "../ui/Select";
 import { PlatformAvatar } from "../ui/PlatformAvatar";
 import { platformMeta } from "../../lib/platforms";
-import type { Channel } from "../../types/channel";
+import { channelAccountName, channelStatus, type Channel } from "../../types/channel";
 
 /**
  * Account and channel selection.
@@ -42,17 +42,32 @@ export function AccountChannelSelectors({
     () =>
       channels.map((c: Channel) => {
         const meta = platformMeta(c.platform);
+        const status = channelStatus(c);
         return {
           value: c.id,
           label: meta.label,
-          // Surfaced so a channel with no working integration behind it is
-          // obvious before the user writes a post, instead of failing on submit.
-          sublabel: describeChannel(c),
+          // The backend's verdict, with its reason. Previously only a caption
+          // changed and every channel stayed selectable, so a locked or
+          // disconnected profile looked fine right up to a failed publish.
+          sublabel: [
+            // The owning brand, always. Channels here are already filtered by
+            // the brand above, but the name is kept next to the profile so the
+            // operator can confirm what they are publishing to without
+            // cross-referencing two dropdowns.
+            channelAccountName(c),
+            c.username,
+            status.publishableHint ?? status.label,
+          ]
+            .filter(Boolean)
+            .join(" · "),
           leading: <PlatformAvatar meta={meta} size={26} />,
         };
       }),
     [channels],
   );
+
+  const selected = channels.find((c) => c.id === channelId) ?? null;
+  const selectedStatus = selected ? channelStatus(selected) : null;
 
   return (
     <div className="selector-grid">
@@ -88,29 +103,16 @@ export function AccountChannelSelectors({
                   : "Select a channel"
           }
           disabled={!accountId || channelsLoading || channelOptions.length === 0}
-          aria-label="Channel"
+          aria-labelledby="channel-label"
         />
+        {selectedStatus && selectedStatus.detail ? (
+          <p className={`field__hint ${selectedStatus.tone === "success" ? "" : "field__hint--warn"}`}>
+            {selectedStatus.detail}
+          </p>
+        ) : null}
       </div>
     </div>
   );
-}
-
-/**
- * A one-line, honest description of what will happen if this channel is used.
- *
- * Channels predating integrations have `publishable === undefined` and are
- * treated as unknown-but-working, so the existing local setup looks exactly as
- * it did before this feature existed.
- */
-function describeChannel(channel: Channel): string | undefined {
-  const handle = channel.username ?? undefined;
-  if (channel.is_locked) return "Locked in Buffer — cannot publish";
-  if (channel.connection_status === "reauth_required") return "Disconnected in Buffer";
-  if (channel.publishable === false) {
-    return channel.integration_name ? `${channel.integration_name} needs attention` : "Not linked to a connection";
-  }
-  if (channel.queue_paused) return `${handle ? `${handle} · ` : ""}Queue paused`;
-  return handle;
 }
 
 function AccountMark({ name, color }: { name: string; color: string | null }) {

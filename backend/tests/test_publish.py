@@ -1,15 +1,137 @@
 """Tests for POST /api/publish.
 
-The n8n engine is always faked here, so nothing is published for real.
+The n8n engine is always faked and Buffer is always mocked, so nothing is
+published for real and no socket leaves the test process.
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from tests.conftest import FakeN8n
+
+
+#: A minimal Buffer mock: one workspace, one channel per platform used here.
+_BUFFER_CHANNELS = {
+    "data": {
+        "channels": [
+            {
+                "id": "buf_fb_1",
+                "name": "company",
+                "displayName": "Company FB",
+                "descriptor": "Facebook Page",
+                "service": "facebook",
+                "type": "PAGE",
+                "avatar": None,
+                "externalLink": None,
+                "isDisconnected": False,
+                "isLocked": False,
+                "isQueuePaused": False,
+                "timezone": "Asia/Dhaka",
+            },
+            {
+                "id": "buf_ig_1",
+                "name": "companyig",
+                "displayName": "Company IG",
+                "descriptor": "Instagram Business",
+                "service": "instagram",
+                "type": "BUSINESS",
+                "avatar": None,
+                "externalLink": None,
+                "isDisconnected": False,
+                "isLocked": False,
+                "isQueuePaused": False,
+                "timezone": "Asia/Dhaka",
+            },
+            {
+                "id": "buf_li_1",
+                "name": "companyli",
+                "displayName": "Company LI",
+                "descriptor": "LinkedIn Page",
+                "service": "linkedin",
+                "type": "PAGE",
+                "avatar": None,
+                "externalLink": None,
+                "isDisconnected": False,
+                "isLocked": False,
+                "isQueuePaused": False,
+                "timezone": "Asia/Dhaka",
+            },
+        ]
+    }
+}
+
+_BUFFER_ACCOUNT = {
+    "data": {"account": {"id": "a1", "organizations": [{"id": "org_pub", "name": "Pub"}]}}
+}
+
+
+@pytest.fixture(autouse=True)
+def buffer_mock(monkeypatch):
+    """Mock every outbound Buffer call for this module."""
+    from app.services import buffer_client
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        try:
+            body = json.loads(request.content.decode("utf-8"))
+        except Exception:
+            body = {}
+        query = body.get("query", "") if isinstance(body, dict) else ""
+        if "organizations" in query:
+            return httpx.Response(200, json=_BUFFER_ACCOUNT)
+        if "channels(input" in query:
+            return httpx.Response(200, json=_BUFFER_CHANNELS)
+        return httpx.Response(400, json={"errors": [{"message": "unexpected"}]})
+
+    transport = httpx.MockTransport(handler)
+    original = buffer_client.BufferClient._http
+
+    def patched(self):
+        client = httpx.Client(transport=transport, timeout=5.0)
+        object.__setattr__(self, "_client", client)
+        return original(self)
+
+    monkeypatch.setattr(buffer_client.BufferClient, "_http", patched)
+    return handler
+
+
+@pytest.fixture(autouse=True)
+def bound_channels(client: TestClient, db, buffer_mock):
+    """Give the seeded channels a real Buffer binding.
+
+    Publishing now refuses a channel that is not linked to a Buffer profile -
+    which is the point of the fix. So the seeded demo channels are bound here
+    through a mocked integration, and every test below exercises the real
+    behaviour rather than a permissive legacy shortcut.
+    """
+    from app.models.entities import Channel
+
+    integration = client.post(
+        "/api/integrations",
+        json={"display_name": "Test Buffer", "api_key": "tok_publish_tests_1"},
+    )
+    assert integration.status_code == 201, integration.text
+    integration_id = integration.json()["id"]
+
+    mapping = {
+        "company_facebook": "buf_fb_1",
+        "company_instagram": "buf_ig_1",
+        "company_linkedin": "buf_li_1",
+    }
+    for channel_id, external_id in mapping.items():
+        row = db.get(Channel, channel_id)
+        assert row is not None, f"seeded channel {channel_id} is missing"
+        row.external_channel_id = external_id
+        row.integration_id = integration_id
+        row.connection_status = "connected"
+        row.is_locked = False
+        row.queue_paused = False
+    db.commit()
+    return integration_id
 
 
 def _local(offset_minutes: int) -> str:
@@ -50,14 +172,18 @@ def test_publish_now(client: TestClient, fake_n8n: FakeN8n) -> None:
     assert body["request_id"].startswith("req_")
     assert body["content_length"] == len("Hello world")
 
-    # the engine received exactly the documented contract
+    # the engine received exactly the documented contract. `request_id` is now
+    # forwarded so the n8n callback can update this attempt's history row
+    # instead of writing a second one.
     sent = fake_n8n.calls[0]
     assert set(sent) == {
-        "account_id", "channel_id", "content",
+        "request_id", "account_id", "channel_id", "content", "post_type",
         "media", "publish_mode", "scheduled_at", "timezone",
     }
+    assert sent["request_id"] == body["request_id"]
     assert sent["publish_mode"] == "NOW"
     assert sent["scheduled_at"] is None
+    assert sent["post_type"] == "post"
 
 
 def test_publish_schedule(client: TestClient, fake_n8n: FakeN8n) -> None:
@@ -266,7 +392,7 @@ def test_same_key_different_payload_is_rejected(client: TestClient, fake_n8n: Fa
     client.post("/api/publish", json=_payload(), headers=headers)
     r = client.post("/api/publish", json=_payload(content="different"), headers=headers)
     assert r.status_code == 409
-    assert r.json()["error"]["code"] == "INVALID_REQUEST"
+    assert r.json()["error"]["code"] == "IDEMPOTENCY_KEY_REUSED"
     assert len(fake_n8n.calls) == 1
 
 

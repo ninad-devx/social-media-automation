@@ -5,6 +5,8 @@ assert the n8n payload looks like the Quick Publisher one.
 """
 from __future__ import annotations
 
+import pytest
+
 # Instagram cannot publish text-only posts, so publishing tests use the
 # text-capable channels and Instagram's media rule is tested on its own.
 from tests.conftest import make_campaign, wait_for_generation
@@ -35,6 +37,19 @@ def _generated(client, targets=None, topic="Launch of our scheduling tool"):
 
 def _post_for(campaign, channel_id):
     return next(p for p in campaign["posts"] if p["channel_id"] == channel_id)
+
+
+
+@pytest.fixture(autouse=True)
+def _bind_seeded_channels(bound_company_channels) -> None:
+    """The seeded demo channels are bound to a mocked Buffer integration.
+
+    Publishing refuses a channel with no Buffer profile - that refusal is the
+    fix this work is verifying - so the fixtures these tests publish through
+    have to be genuinely bound. The integration is a throwaway row with an
+    encrypted dummy credential; no socket is opened and no real token exists.
+    """
+
 
 
 # --------------------------------------------------------------------------- #
@@ -528,7 +543,7 @@ def test_bulk_publish_marks_one_failure_without_blocking_the_rest(
 
 
 def test_bulk_publish_ignores_unselected_posts(
-    client, fake_adapter, provider_row, fake_n8n, db
+    client, fake_adapter, provider_row, fake_n8n, db, bound_company_channels
 ) -> None:
     """Selecting two of three must publish exactly two."""
     from app.models.entities import Channel
@@ -539,6 +554,12 @@ def test_bulk_publish_ignores_unselected_posts(
             account_id="company",
             platform="facebook",
             display_name="Company Facebook (page 2)",
+            # A brand-new channel has to be bound before it can publish. The
+            # second page is added here to make the bulk selection three wide,
+            # so it is bound the same way a real import would bind it.
+            external_channel_id="buf_sma_fb_2",
+            integration_id=bound_company_channels,
+            connection_status="connected",
         )
     )
     db.commit()

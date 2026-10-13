@@ -29,9 +29,11 @@ from app.core.logging import get_logger
 from app.database.session import get_db
 from app.models.entities import PublishLog
 from app.services import account_service
-from app.services.buffer_client import BufferApiError, platform_metadata_for
+from app.services.buffer_client import BufferApiError
 from app.services.errors import AppError, ErrorCode
 from app.services.integration_service import IntegrationService, map_buffer_error
+from app.services.platform_capabilities import buffer_metadata_for, validate_for_publish
+from app.services.publish_history import confirm_publish_attempt
 
 logger = get_logger("app.internal")
 
@@ -83,6 +85,8 @@ class InternalPublishRequest(BaseModel):
     scheduled_at: str | None = None
     timezone: str | None = None
     media: list[dict[str, Any]] = Field(default_factory=list)
+    # Explicit post type. Optional: when absent the platform default is used.
+    post_type: str | None = Field(default=None, max_length=32)
 
 
 @router.post("/publish", dependencies=[InternalAuth])
@@ -111,6 +115,22 @@ def internal_publish(
 
     mode = "NOW" if payload.publish_mode.upper() == "NOW" else "SCHEDULE"
 
+    # Re-validate here rather than trusting the caller: this route is a separate
+    # entry point into the Buffer call, so the same capability rules must hold
+    # here or they can be bypassed by going through n8n.
+    resolved_type = validate_for_publish(
+        platform=channel.platform,
+        text=payload.content,
+        media=payload.media or [],
+        post_type=payload.post_type,
+    )
+    if resolved_type.requires_schedule and mode != "SCHEDULE":
+        raise AppError(ErrorCode.INVALID_PUBLISH_MODE, 400, field="publish_mode")
+
+    metadata = buffer_metadata_for(
+        channel.platform, resolved_type, len(payload.media or [])
+    )
+
     try:
         result = client.create_post(
             channel_id=buffer_channel_id,
@@ -119,7 +139,7 @@ def internal_publish(
             scheduled_local=scheduled_local,
             timezone=payload.timezone,
             source_suffix=payload.request_id,
-            platform_metadata=platform_metadata_for(channel.platform),
+            platform_metadata=metadata,
         )
     except BufferApiError as exc:
         # Never surfaced raw to the caller; mapped to a stable code.
@@ -139,25 +159,46 @@ def internal_publish(
 
     status_value = "scheduled" if mode == "SCHEDULE" else "published"
 
-    # Record the confirmed outcome so history never shows a phantom success.
-    _record_publish_log(
-        db,
-        request_id=payload.request_id,
-        account_id=account.id,
-        channel=channel,
-        content=payload.content.strip(),
-        media_count=len(payload.media or []),
-        publish_mode=mode,
-        timezone_name=payload.timezone or settings.default_timezone,
-        scheduled_local=scheduled_local,
-        result=result,
-        status_value=status_value,
-        source="n8n_internal",
-    )
-
     scheduled_at = None
     if status_value == "scheduled":
         scheduled_at = _parse_iso(result.due_at or scheduled_local)
+        if scheduled_at is not None and scheduled_at.tzinfo is None:
+            from zoneinfo import ZoneInfo
+
+            try:
+                scheduled_at = scheduled_at.replace(
+                    tzinfo=ZoneInfo(payload.timezone or settings.default_timezone)
+                )
+            except Exception:  # pragma: no cover - invalid tz already validated upstream
+                pass
+        if scheduled_at is not None:
+            scheduled_at = scheduled_at.astimezone(timezone.utc)
+
+    # Record the confirmed outcome so history never shows a phantom success.
+    #
+    # This UPDATES the provisional row the browser-facing route already created
+    # for this `request_id`, rather than inserting a second one. The two used to
+    # write separate rows with different request ids, which is why every publish
+    # appeared twice in history.
+    confirm_publish_attempt(
+        db,
+        request_id=payload.request_id,
+        status=status_value,
+        account_id=account.id,
+        channel_id=channel.id,
+        platform=channel.platform,
+        buffer_publication_id=result.post_id,
+        external_link=result.external_link,
+        scheduled_at=scheduled_at,
+        source="n8n_internal",
+        extra_fields={
+            "media_count": len(payload.media or []),
+            "publish_mode": mode,
+            "content": payload.content.strip(),
+            "content_preview": payload.content.strip()[:280],
+            "timezone": payload.timezone or settings.default_timezone,
+        },
+    )
 
     return {
         "success": True,
@@ -184,49 +225,3 @@ def _parse_iso(value: str | None) -> datetime | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-
-
-def _record_publish_log(
-    db: Session,
-    *,
-    request_id: str,
-    account_id: str,
-    channel: Any,
-    content: str,
-    media_count: int,
-    publish_mode: str,
-    timezone_name: str,
-    scheduled_local: str | None,
-    result: Any,
-    status_value: str,
-    source: str,
-) -> None:
-    scheduled_at = _parse_iso(scheduled_local) if publish_mode == "SCHEDULE" else None
-    if scheduled_at is not None and scheduled_at.tzinfo is None:
-        from zoneinfo import ZoneInfo
-
-        try:
-            scheduled_at = scheduled_at.replace(tzinfo=ZoneInfo(timezone_name))
-        except Exception:  # pragma: no cover - invalid tz already validated upstream
-            pass
-
-    row = PublishLog(
-        request_id=request_id,
-        idempotency_key=None,
-        account_id=account_id,
-        channel_id=channel.id,
-        platform=channel.platform,
-        content=content,
-        content_preview=content[:280],
-        media_count=media_count,
-        publish_mode=publish_mode,
-        scheduled_at=scheduled_at.astimezone(timezone.utc) if scheduled_at else None,
-        timezone=timezone_name,
-        status=status_value,
-        buffer_publication_id=result.post_id,
-        external_link=result.external_link,
-        duration_ms=None,
-        source=source,
-    )
-    db.add(row)
-    db.commit()

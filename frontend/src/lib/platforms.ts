@@ -1,126 +1,110 @@
 /**
- * Platform identity.
+ * Frontend platform types.
  *
- * Everything platform-specific (label, colour, glyph, limits) lives here, so
- * selecting a different platform never requires touching a page component.
+ * These mirror the backend capability model exactly. The values are NOT
+ * hardcoded here any more: the app fetches them from `/api/platforms`, which is
+ * the single source of truth. The constants below only exist as keys and as a
+ * safe fallback for the first render before the fetch resolves.
  */
+
 export type PlatformKey =
   | "instagram"
   | "facebook"
   | "linkedin"
   | "twitter"
+  | "x"
   | "threads"
   | "mastodon"
   | "youtube"
   | "bluesky"
   | "pinterest";
 
-export interface PlatformMeta {
-  key: PlatformKey;
+export type PostTypeKey =
+  | "post"
+  | "video"
+  | "reel"
+  | "story"
+  | "carousel"
+  | "link"
+  | "long_form";
+
+export interface PostTypeCapability {
+  key: PostTypeKey;
   label: string;
-  /** CSS custom property name holding the platform accent. */
-  colorVar: string;
-  /** Two-to-four character wordmark shown in the tinted avatar. */
-  mark: string;
-  /** Platforms that cannot accept a text-only post. */
-  requiresMedia: boolean;
-  /** Advisory only. The backend does not enforce this. */
-  suggestedLimit: number | null;
-  maxImages?: number;
+  min_assets: number | null;
+  max_assets: number | null;
+  allows_image: boolean;
+  allows_video: boolean;
+  requires_schedule: boolean;
 }
 
-const META: Record<string, PlatformMeta> = {
-  instagram: {
-    key: "instagram",
-    label: "Instagram",
-    colorVar: "--platform-instagram",
-    mark: "IG",
-    requiresMedia: true,
-    suggestedLimit: 2200,
-    maxImages: 10,
-  },
-  facebook: {
-    key: "facebook",
-    label: "Facebook",
-    colorVar: "--platform-facebook",
-    mark: "f",
-    requiresMedia: false,
-    suggestedLimit: 63206,
-  },
-  linkedin: {
-    key: "linkedin",
-    label: "LinkedIn",
-    colorVar: "--platform-linkedin",
-    mark: "in",
-    requiresMedia: false,
-    suggestedLimit: 3000,
-  },
-  twitter: {
-    key: "twitter",
-    label: "X",
-    colorVar: "--platform-twitter",
-    mark: "X",
-    requiresMedia: false,
-    suggestedLimit: 280,
-  },
-  threads: {
-    key: "threads",
-    label: "Threads",
-    colorVar: "--platform-threads",
-    mark: "@",
-    requiresMedia: false,
-    suggestedLimit: 500,
-  },
-  mastodon: {
-    key: "mastodon",
-    label: "Mastodon",
-    colorVar: "--platform-mastodon",
-    mark: "M",
-    requiresMedia: false,
-    suggestedLimit: 500,
-  },
-  youtube: {
-    key: "youtube",
-    label: "YouTube",
-    colorVar: "--platform-youtube",
-    mark: "YT",
-    requiresMedia: true,
-    suggestedLimit: 5000,
-  },
-  bluesky: {
-    key: "bluesky",
-    label: "Bluesky",
-    colorVar: "--platform-bluesky",
-    mark: "BS",
-    requiresMedia: false,
-    suggestedLimit: 300,
-  },
-  pinterest: {
-    key: "pinterest",
-    label: "Pinterest",
-    colorVar: "--platform-pinterest",
-    mark: "P",
-    requiresMedia: true,
-    suggestedLimit: 500,
-  },
+export interface PlatformCapability {
+  platform: PlatformKey;
+  label: string;
+  /** False for a platform this deployment has no rules for. */
+  known: boolean;
+  requires_media: boolean;
+  supports_image: boolean;
+  supports_video: boolean;
+  supports_carousel: boolean;
+  max_assets: number | null;
+  text_limit: number | null;
+  default_post_type: PostTypeKey;
+  post_types: PostTypeCapability[];
+}
+
+/** Minimal shape needed to render a chip/avatar while the fetch is pending. */
+export interface PlatformMeta {
+  key: PlatformKey | string;
+  label: string;
+  colorVar: string;
+  mark: string;
+}
+
+const MARKS: Record<string, { label: string; colorVar: string; mark: string }> = {
+  instagram: { label: "Instagram", colorVar: "--platform-instagram", mark: "IG" },
+  facebook: { label: "Facebook", colorVar: "--platform-facebook", mark: "f" },
+  linkedin: { label: "LinkedIn", colorVar: "--platform-linkedin", mark: "in" },
+  twitter: { label: "X", colorVar: "--platform-twitter", mark: "X" },
+  x: { label: "X", colorVar: "--platform-twitter", mark: "X" },
+  threads: { label: "Threads", colorVar: "--platform-threads", mark: "@" },
+  mastodon: { label: "Mastodon", colorVar: "--platform-mastodon", mark: "M" },
+  youtube: { label: "YouTube", colorVar: "--platform-youtube", mark: "YT" },
+  bluesky: { label: "Bluesky", colorVar: "--platform-bluesky", mark: "BS" },
+  pinterest: { label: "Pinterest", colorVar: "--platform-pinterest", mark: "P" },
 };
 
 const FALLBACK: PlatformMeta = {
-  key: "instagram",
+  key: "unknown",
   label: "Social",
   colorVar: "--platform-generic",
   mark: "S",
-  requiresMedia: false,
-  suggestedLimit: null,
 };
 
+/**
+ * Display-only identity. Never used for rules.
+ *
+ * The audit found three copies of the platform table in this codebase which had
+ * already drifted apart. Limits and capabilities now come from the backend via
+ * `usePlatformCapability`; this only covers label/colour/mark.
+ */
 export function platformMeta(platform: string | null | undefined): PlatformMeta {
   if (!platform) return FALLBACK;
-  return META[platform.toLowerCase()] ?? { ...FALLBACK, label: platform };
+  const hit = MARKS[platform.toLowerCase()];
+  if (!hit) return { ...FALLBACK, label: platform };
+  return { key: platform.toLowerCase(), ...hit };
 }
 
-/** Supported platform options, for the settings/filter UI. */
-export const SUPPORTED_PLATFORMS = Object.values(META).map((p) => ({
-  key: p.key,
-  label: p.label,
-}));
+/** Every platform the backend reports, for filters and dropdowns. */
+export const SUPPORTED_PLATFORMS: PlatformKey[] = Object.keys(MARKS) as PlatformKey[];
+
+/** Post type keys, for the composer. */
+export const POST_TYPE_KEYS: PostTypeKey[] = [
+  "post",
+  "carousel",
+  "reel",
+  "story",
+  "video",
+  "link",
+  "long_form",
+];

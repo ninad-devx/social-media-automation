@@ -1,6 +1,7 @@
 """POST /api/publish and publishing history endpoints."""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Header, Query
@@ -9,8 +10,14 @@ from sqlalchemy import func, select
 from app.api.deps import ApiKeyDep, DbDep, N8nDep
 from app.core.config import get_settings
 from app.core.logging import get_logger, request_id_var
-from app.models.entities import PublishLog
-from app.schemas.publishing import PublishLogPage, PublishRequest, PublishResponse
+from app.models.entities import Account, Channel, PublishLog
+from app.schemas.publishing import (
+    DuplicateHistoryReport,
+    PublishLogOut,
+    PublishLogPage,
+    PublishRequest,
+    PublishResponse,
+)
 from app.services.publish_service import PublishService
 
 logger = get_logger("app.publishing")
@@ -86,6 +93,32 @@ def publish(
         request_id_var.reset(token)
 
 
+def _with_names(db, rows: list[PublishLog]) -> list[PublishLogOut]:
+    """Attach brand and channel names so the UI never renders a raw id."""
+    account_ids = {r.account_id for r in rows}
+    channel_ids = {r.channel_id for r in rows}
+
+    accounts = {
+        a.id: a.name
+        for a in db.scalars(select(Account).where(Account.id.in_(account_ids))).all()
+    } if account_ids else {}
+    channels = {
+        c.id: c.display_name
+        for c in db.scalars(select(Channel).where(Channel.id.in_(channel_ids))).all()
+    } if channel_ids else {}
+
+    return [
+        PublishLogOut(
+            **{
+                **PublishLogOut.model_validate(row, from_attributes=True).model_dump(),
+                "account_name": accounts.get(row.account_id),
+                "channel_name": channels.get(row.channel_id),
+            }
+        )
+        for row in rows
+    ]
+
+
 @router.get("/publish/history", response_model=PublishLogPage, dependencies=[ApiKeyDep])
 def publish_history(
     db: DbDep,
@@ -94,8 +127,14 @@ def publish_history(
     account_id: Annotated[str | None, Query()] = None,
     channel_id: Annotated[str | None, Query()] = None,
     status_filter: Annotated[str | None, Query(alias="status")] = None,
+    platform: Annotated[str | None, Query(max_length=32)] = None,
 ) -> PublishLogPage:
-    """Publishing history. Backs the Posts and Calendar pages."""
+    """Publishing history. Backs the Posts and Calendar pages.
+
+    Deliberately NOT filtered by channel or brand state: a post that really went
+    out stays visible after its channel is archived or its brand disabled, so the
+    audit trail never silently loses rows.
+    """
     stmt = select(PublishLog)
     count_stmt = select(func.count()).select_from(PublishLog)
 
@@ -108,10 +147,38 @@ def publish_history(
     if status_filter:
         stmt = stmt.where(PublishLog.status == status_filter)
         count_stmt = count_stmt.where(PublishLog.status == status_filter)
+    if platform:
+        stmt = stmt.where(PublishLog.platform == platform.lower())
+        count_stmt = count_stmt.where(PublishLog.platform == platform.lower())
 
     total = int(db.scalar(count_stmt) or 0)
-    rows = db.scalars(
-        stmt.order_by(PublishLog.created_at.desc(), PublishLog.id.desc()).limit(limit).offset(offset)
-    ).all()
+    rows = list(
+        db.scalars(
+            stmt.order_by(PublishLog.created_at.desc(), PublishLog.id.desc())
+            .limit(limit)
+            .offset(offset)
+        ).all()
+    )
 
-    return PublishLogPage(items=list(rows), total=total, limit=limit, offset=offset)
+    return PublishLogPage(
+        items=_with_names(db, rows), total=total, limit=limit, offset=offset
+    )
+
+
+@router.get("/publish/history/duplicates", response_model=DuplicateHistoryReport, dependencies=[ApiKeyDep])
+def publish_history_duplicates(db: DbDep) -> DuplicateHistoryReport:
+    """Report existing duplicate history rows. Read-only.
+
+    New publishes can no longer produce duplicates, but rows written before this
+    fix are still in the table. This endpoint finds them so they can be reviewed
+    and reconciled deliberately. It changes nothing.
+    """
+    from app.services.publish_history import duplicate_history_report
+
+    groups = duplicate_history_report(db)
+    return DuplicateHistoryReport(
+        generated_at=datetime.now(timezone.utc),
+        total_rows=int(db.scalar(select(func.count()).select_from(PublishLog)) or 0),
+        duplicate_groups=groups,
+        redundant_rows=sum(g["copies"] - 1 for g in groups),
+    )

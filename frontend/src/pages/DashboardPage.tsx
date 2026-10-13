@@ -4,13 +4,34 @@ import { PlatformAvatar } from "../components/ui/PlatformAvatar";
 import { platformMeta } from "../lib/platforms";
 import { useAccounts } from "../hooks/useAccounts";
 import { useChannels } from "../hooks/useChannels";
+import { useSystemStatus } from "../hooks/useSystemStatus";
 
 /**
  * Dashboard.
  * A calm overview: what you can publish, and the fastest route to doing it.
  */
 export function DashboardPage() {
-  const { data: accounts, loading } = useAccounts();
+  const { data: accounts, loading, error: accountsError } = useAccounts();
+  const { data: system } = useSystemStatus();
+
+  // The dashboard used to print a hardcoded green "Online" for the publishing
+  // engine regardless of what was actually configured or reachable.
+  const engineStatus = !system
+    ? "Unknown"
+    : system.publish_engine === "direct"
+      ? "Direct to Buffer"
+      : system.n8n.reachable === null
+        ? "Not checked"
+        : system.n8n.reachable
+          ? "Online"
+          : "Unreachable";
+  const engineTone: "success" | "neutral" | "danger" = !system
+    ? "neutral"
+    : engineStatus === "Online" || engineStatus === "Direct to Buffer"
+      ? "success"
+      : engineStatus === "Not checked"
+        ? "neutral"
+        : "danger";
   const firstAccountId = accounts?.[0]?.id ?? null;
   const { channels } = useChannels(firstAccountId);
 
@@ -31,7 +52,12 @@ export function DashboardPage() {
       <div className="stats">
         <StatCard label="Accounts" value={accounts?.length ?? 0} loading={loading} />
         <StatCard label="Connected channels" value={totalChannels} loading={loading} />
-        <StatCard label="Publishing engine" value="Online" badge loading={loading} />
+        <StatCard
+          label="Publishing engine"
+          value={engineStatus}
+          tone={engineTone}
+          loading={loading}
+        />
       </div>
 
       <Card>
@@ -45,6 +71,12 @@ export function DashboardPage() {
         </div>
 
         {loading && <div className="skeleton" style={{ height: 120 }} />}
+
+        {accountsError && (
+          <p className="notice notice--error" role="alert">
+            Could not load your accounts: {accountsError}
+          </p>
+        )}
 
         {!loading && accounts && accounts.length === 0 && (
           <p className="publish__note">
@@ -92,20 +124,21 @@ function StatCard({
   label,
   value,
   loading,
-  badge = false,
+  tone,
 }: {
   label: string;
   value: number | string;
   loading: boolean;
-  badge?: boolean;
+  /** Tints the value. The engine card used to always render green. */
+  tone?: 'success' | 'neutral' | 'danger';
 }) {
   return (
     <Card className="stat">
       <span className="stat__label">{label}</span>
       {loading ? (
         <div className="skeleton" style={{ height: 26, width: 56 }} />
-      ) : badge ? (
-        <Badge tone="success">
+      ) : tone ? (
+        <Badge tone={tone}>
           <span className="stat__dot" aria-hidden="true" />
           {value}
         </Badge>

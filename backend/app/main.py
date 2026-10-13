@@ -51,13 +51,25 @@ async def lifespan(_: FastAPI):
         for warning in settings.startup_warnings():
             logger.warning("app.startup_warning: %s", warning)
 
-    from app.database.seed import seed
     from app.database.session import init_db, session_scope
     from app.services import auth_service
 
     init_db()
     with session_scope() as db:
-        seed(db)
+        # Demo fixture only, and only ever on a genuinely empty database. The
+        # previous version ran on every boot and re-created channels an
+        # administrator had removed, and overwrote edited brand names, colours
+        # and descriptions. Production never wants this path at all.
+        if settings.effective_seed_demo_data:
+            from app.database.seed import seed
+
+            created = seed(db)
+            if created:
+                logger.warning(
+                    "db.demo_data_seeded: %d demo row(s) inserted into an empty database",
+                    created,
+                )
+
         # Create the operator on first boot from APP_ADMIN_PASSWORD. There is
         # no default password: if the variable is unset this does nothing and
         # the login screen explains that no operator is configured.

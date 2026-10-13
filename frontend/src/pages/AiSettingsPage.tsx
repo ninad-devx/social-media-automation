@@ -10,7 +10,7 @@ import type {
   ChannelInstructions,
   ProviderCatalogueItem,
 } from "../types/ai";
-import type { Channel } from "../types/channel";
+import { channelCaption, type Channel } from "../types/channel";
 
 type Tab = "providers" | "global" | "brand" | "channel";
 
@@ -789,7 +789,7 @@ function ChannelTab() {
             id="channel-select"
             value={channelId}
             onChange={setChannelId}
-            options={channels.map((c) => ({ value: c.id, label: c.display_name ?? c.id }))}
+            options={channels.map((c) => ({ value: c.id, label: channelCaption(c) }))}
           />
         </Field>
       )}

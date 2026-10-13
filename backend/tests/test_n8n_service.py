@@ -27,7 +27,15 @@ def _service(handler) -> N8nService:
 
 
 @pytest.fixture(autouse=True)
-def patch_client(monkeypatch):
+def patch_client(monkeypatch, allow_publish):
+    """Every test in this module exercises the real N8nService.publish().
+
+    The transport is mocked, but the publishing guard is armed at the service
+    seam, so `allow_publish` is required to switch it from `dry_run` to
+    `monitor`. The suite-wide network kill switch still makes a real request
+    to an n8n instance impossible.
+    """
+
     holder: dict = {}
 
     def factory(handler):

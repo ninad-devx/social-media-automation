@@ -3,6 +3,7 @@ import { PlatformAvatar } from "../components/ui/PlatformAvatar";
 import { useAccounts } from "../hooks/useAccounts";
 import { useChannels } from "../hooks/useChannels";
 import { platformMeta } from "../lib/platforms";
+import { channelStatus } from "../types/channel";
 
 /**
  * Accounts page.
@@ -112,10 +113,21 @@ function AccountCard({
                     <span className="channel-list__name">{meta.label}</span>
                     {c.username && <span className="channel-list__handle">{c.username}</span>}
                   </div>
-                  <span className="channel-list__status">
-                    <span className="channel-list__dot" aria-hidden="true" />
-                    Connected
-                  </span>
+                  {(() => {
+                    const health = channelStatus(c);
+                    return (
+                      <span
+                        className="channel-list__status"
+                        title={health.detail ?? undefined}
+                      >
+                        <span
+                          className={`channel-list__dot is-${health.tone}`}
+                          aria-hidden="true"
+                        />
+                        {health.label}
+                      </span>
+                    );
+                  })()}
                 </li>
               );
             })}

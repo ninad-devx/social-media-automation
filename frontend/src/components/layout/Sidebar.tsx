@@ -8,11 +8,23 @@ const NAV: Array<{ to: string; label: string; icon: () => React.JSX.Element; end
   { to: "/posts", label: "Posts", icon: IconList, end: false },
   { to: "/calendar", label: "Calendar", icon: IconCalendar, end: false },
   { to: "/accounts", label: "Accounts", icon: IconUsers, end: false },
-  { to: "/settings/ai", label: "AI Settings", icon: IconKey, end: false },
-  { to: "/settings", label: "Settings", icon: IconSettings, end: false },
+  // `end: true` on /settings: with end:false it also matched /settings/ai,
+  // so "AI Settings" and "Settings" were highlighted at the same time.
+  { to: "/settings/ai", label: "AI Settings", icon: IconKey, end: true },
+  { to: "/settings", label: "Settings", icon: IconSettings, end: true },
 ];
 
-export function Sidebar({ collapsed }: { collapsed: boolean }) {
+/**
+ * The engine card used to print a hardcoded "n8n -> Buffer" on every page,
+ * which misreports a direct-engine deployment. The caller supplies the truth.
+ */
+export function Sidebar({
+  collapsed,
+  engineLabel = "n8n -> Buffer",
+}: {
+  collapsed: boolean;
+  engineLabel?: string;
+}) {
   return (
     <nav className="sidebar" aria-label="Main navigation">
       <div className="sidebar__brand">
@@ -50,7 +62,7 @@ export function Sidebar({ collapsed }: { collapsed: boolean }) {
               <span className="engine-card__dot" aria-hidden="true" />
               <span className="engine-card__label">Publishing engine</span>
             </div>
-            <p className="engine-card__meta">n8n → Buffer</p>
+            <p className="engine-card__meta">{engineLabel}</p>
           </div>
         )}
       </div>

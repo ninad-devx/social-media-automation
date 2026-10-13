@@ -119,12 +119,18 @@ def update_integration(
     if payload.api_key is not None and not service.encryption_available():
         raise AppError(ErrorCode.INTEGRATION_CREDENTIAL_UNREADABLE, 503, field="api_key")
 
+    # A workspace change is validated against what the credential can actually
+    # reach. Setting the column directly would let a stale or hand-typed id
+    # produce an integration that fails on every publish.
+    if payload.organization_id is not None:
+        integration = service.select_organization(integration, payload.organization_id)
+
     updated = service.update(
         integration,
         display_name=payload.display_name,
         enabled=payload.enabled,
         api_key=payload.api_key,
-        organization_id=payload.organization_id,
+        organization_id=None,  # already applied and validated above
     )
     return serialize(updated, service)
 

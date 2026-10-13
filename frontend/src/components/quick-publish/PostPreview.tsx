@@ -14,6 +14,7 @@ export function PostPreview({
   content,
   media,
   publishMode,
+  postType,
   date,
   time,
   timezone,
@@ -24,6 +25,8 @@ export function PostPreview({
   content: string;
   media: MediaItem[];
   publishMode: "NOW" | "SCHEDULE";
+  /** Shown so the preview matches what will actually be sent. */
+  postType?: string | null;
   date: string;
   time: string;
   timezone: string;
@@ -57,6 +60,7 @@ export function PostPreview({
         </div>
         <span className={`preview__mode ${publishMode === "NOW" ? "is-now" : "is-scheduled"}`}>
           {publishMode === "NOW" ? "Publish now" : "Scheduled"}
+          {postType ? ` · ${postType.replace(/_/g, " ")}` : ""}
         </span>
       </div>
 
@@ -70,9 +74,11 @@ export function PostPreview({
         )}
 
         {hasMedia && (
-          <div className={`preview__media preview__media--${Math.min(media.length, 3)}`}>
-            {media.slice(0, 4).map((m) => (
-              <span key={m.url} className="preview__media-item">
+          <div className={`preview__media preview__media--${Math.min(media.length, 4)}`}>
+            {/* Four items render, so the grid class is capped at four too. It
+                was capped at three, which made the last cell overflow. */}
+            {media.slice(0, 4).map((m, i) => (
+              <span key={`${m.url}-${i}`} className="preview__media-item">
                 {m.type === "image" ? (
                   <img
                     src={m.preview_url || m.url}

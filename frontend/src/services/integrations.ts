@@ -5,6 +5,7 @@
  * rotating a token or importing channels all happen through these endpoints.
  */
 import { api } from "./api";
+import type { Channel } from "../types/channel";
 import type {
   ChannelSyncResult,
   ConnectionTestResult,
@@ -70,15 +71,59 @@ export const channelsAdminApi = {
   update: (id: string, body: Partial<{ display_name: string; description: string; active: boolean }>) =>
     api.patch<unknown>(`/api/channels/${encodeURIComponent(id)}`, body),
 
+  /**
+   * Remove a channel from this application.
+   *
+   * This is an archive, not a delete: the row and its publishing history stay,
+   * nothing is sent to Buffer, and the Buffer profile is released so it can be
+   * imported into another brand. `POST .../restore` undoes it.
+   */
+  remove: (id: string, reason?: string) =>
+    api.del<void>(
+      `/api/channels/${encodeURIComponent(id)}${reason ? `?reason=${encodeURIComponent(reason)}` : ""}`,
+    ),
+
+  restore: (id: string) =>
+    api.post<unknown>(`/api/channels/${encodeURIComponent(id)}/restore`),
+
+  /** Move a channel to another brand, explicitly. */
+  reassign: (id: string, accountId: string) =>
+    api.post<unknown>(`/api/channels/${encodeURIComponent(id)}/reassign`, {
+      account_id: accountId,
+    }),
+
   /** Re-read one channel from its provider. */
   refresh: (id: string) => api.post<unknown>(`/api/channels/${encodeURIComponent(id)}/refresh`),
 
-  /** Manual binding, for when automatic discovery is unavailable. */
+  /**
+   * Manual binding, for when automatic discovery is unavailable.
+   *
+   * `integration_id` is required by the backend: a channel cannot be linked
+   * without one, because that is what supplies the credential to publish with.
+   * The previous version let the UI omit it and produced channels that looked
+   * linked but could never publish.
+   */
   bind: (body: {
     account_id: string;
+    integration_id: string;
     external_channel_id: string;
     platform: string;
     display_name?: string;
     username?: string;
   }) => api.post<unknown>("/api/channels/bind", body),
+};
+
+export const channelsApi = {
+  /**
+   * Administrative view of every channel, including inactive and archived.
+   * Ordinary selectors must use the default endpoint, which hides them.
+   */
+  listAll: (signal?: AbortSignal) =>
+    api.get<Channel[]>("/api/channels?include_inactive=true&include_inactive_accounts=true", signal),
+
+  listForAccount: (accountId: string, includeInactive = false, signal?: AbortSignal) =>
+    api.get<Channel[]>(
+      `/api/accounts/${encodeURIComponent(accountId)}/channels${includeInactive ? "?include_inactive=true" : ""}`,
+      signal,
+    ),
 };

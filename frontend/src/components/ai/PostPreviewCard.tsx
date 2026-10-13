@@ -14,9 +14,15 @@ import type { CampaignPost } from "../../types/ai";
 export function PostPreviewCard({
   post,
   children,
+  requiresMedia = false,
 }: {
   post: CampaignPost;
   children?: React.ReactNode;
+  /**
+   * Supplied by the caller from the backend capability endpoint, so this
+   * component keeps no platform table of its own.
+   */
+  requiresMedia?: boolean;
 }) {
   const meta = platformMeta(post.platform);
   const text = post.effective_content?.trim() ?? "";
@@ -30,7 +36,7 @@ export function PostPreviewCard({
           <span className="preview-card__account">{post.account_name}</span>
           <span className="preview-card__channel">
             {meta.label}
-            {meta.requiresMedia && !post.media.length && (
+            {requiresMedia && !post.media.length && (
               <span className="preview-card__warn"> · needs an image</span>
             )}
           </span>

@@ -61,6 +61,19 @@ def _system_prompt(db, topic: str, brand: str | None = None, context: str | None
     return build_system_prompt(effective, account, channel, "LinkedIn", campaign, None)
 
 
+
+@pytest.fixture(autouse=True)
+def _bind_seeded_channels(bound_company_channels) -> None:
+    """The seeded demo channels are bound to a mocked Buffer integration.
+
+    Publishing refuses a channel with no Buffer profile - that refusal is the
+    fix this work is verifying - so the fixtures these tests publish through
+    have to be genuinely bound. The integration is a throwaway row with an
+    encrypted dummy credential; no socket is opened and no real token exists.
+    """
+
+
+
 def test_the_topic_appears_in_the_system_prompt() -> None:
     """It used to live only at the bottom of the user prompt."""
     text = _system_prompt(None, "Why cities should plant more trees")

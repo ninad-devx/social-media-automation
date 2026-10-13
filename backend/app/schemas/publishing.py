@@ -51,6 +51,12 @@ class PublishRequest(BaseModel):
     scheduled_at: datetime | None = None
     timezone: str = Field(default="Asia/Dhaka", max_length=64)
 
+    # Explicit post type: post, carousel, reel, story, video, long_form.
+    # Optional - when omitted the platform's default is used. An unsupported
+    # value is refused before anything is sent, never silently downgraded to a
+    # feed post.
+    post_type: str | None = Field(default=None, max_length=32)
+
     # --- reserved for later phases, accepted but not yet acted upon --------
     source: str | None = Field(default="dashboard", max_length=32)
     campaign_id: str | None = Field(default=None, max_length=64)
@@ -100,18 +106,53 @@ class PublishLogOut(BaseModel):
     id: int
     request_id: str
     account_id: str
+    # Resolved from the accounts table for display. The audit found Posts and
+    # Calendar rendering a raw UUID where a brand name belongs.
+    account_name: str | None = None
     channel_id: str
+    channel_name: str | None = None
     platform: str
     content_preview: str
     media_count: int
     publish_mode: str
+    post_type: str | None = None
     scheduled_at: datetime | None = None
     timezone: str
     status: str
     buffer_publication_id: str | None = None
     external_link: str | None = None
     error_code: str | None = None
+    error_message: str | None = None
+    duration_ms: int | None = None
     created_at: datetime | None = None
+
+
+class DuplicateHistoryGroup(BaseModel):
+    """One set of history rows that describe the same attempt."""
+
+    account_id: str
+    channel_id: str
+    platform: str
+    publish_mode: str
+    scheduled_at: str | None
+    copies: int
+    row_ids: list[int]
+    request_ids: list[str]
+    created_at: list[str | None]
+    statuses: list[str]
+
+
+class DuplicateHistoryReport(BaseModel):
+    """Read-only reconciliation input. Never applied automatically."""
+
+    generated_at: datetime
+    total_rows: int
+    duplicate_groups: list[DuplicateHistoryGroup]
+    redundant_rows: int
+    note: str = (
+        "Reported for review only. No rows were changed. Reconciling history is "
+        "an operator decision because each row records a real attempt."
+    )
 
 
 class PublishLogPage(BaseModel):

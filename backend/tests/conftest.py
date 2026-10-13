@@ -25,6 +25,30 @@ from cryptography.fernet import Fernet  # noqa: E402
 os.environ["AI_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
 os.environ["AI_MAX_CONCURRENCY"] = "4"
 
+# ---------------------------------------------------------------------------
+# PUBLISHING SAFETY GUARD - FAIL CLOSED
+# ---------------------------------------------------------------------------
+# The company channels connected to this project are real. The suite must never
+# be able to publish, schedule or queue anything to them, even by accident.
+#
+# Two independent layers:
+#   1. PUBLISHING_GUARD=dry_run makes every guarded Buffer/n8n operation raise
+#      and append to an audit log. Installed in app.services.buffer_client and
+#      app.services.n8n_service, at the real-transport seam.
+#   2. The `_no_outbound_network` fixture below refuses to open a socket to any
+#      non-loopback address, so anything that bypasses layer 1 still cannot
+#      reach api.buffer.com, an n8n instance, an AI provider or a public media
+#      URL.
+#
+# A test that genuinely needs to exercise a publishing code path must say so
+# with the `allow_publish` fixture. Nothing bypasses this implicitly.
+os.environ["PUBLISHING_GUARD"] = "dry_run"
+os.environ["PUBLISHING_GUARD_LOG"] = os.path.join(_tmpdir, "publishing-guard.jsonl")
+# The n8n and internal-secret gates stay shut for the whole suite, so even a
+# direct call to the internal publish route is inert.
+os.environ["INTERNAL_SERVICE_SECRET"] = ""
+os.environ["BUFFER_API_BASE_URL"] = "https://buffer.invalid"
+
 from fastapi.testclient import TestClient  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 
@@ -219,6 +243,99 @@ def _as_post(parsed: dict) -> GeneratedPost:
 
 
 @pytest.fixture(autouse=True)
+def _no_outbound_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """Hard network kill switch for the whole suite.
+
+    Layer 2 of the publishing guard. Any attempt to open a socket to a
+    non-loopback address raises immediately. `httpx.MockTransport` never
+    touches a socket, so the mocked publishing tests keep working while a real
+    request to api.buffer.com, an n8n webhook, an AI provider or a public media
+    URL is impossible.
+
+    Loopback stays allowed because a few tests exercise local filesystem and
+    sqlite behaviour; nothing there can reach a social channel.
+    """
+    import socket
+
+    from app.services import publishing_guard as guard
+
+    loopback = {"127.0.0.1", "::1", "localhost", "", "0.0.0.0", "::"}
+
+    def _host_of(address) -> str:
+        if isinstance(address, tuple) and address:
+            return str(address[0])
+        return ""
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def guarded_connect(self, address, *args, **kwargs):
+        host = _host_of(address)
+        if host not in loopback:
+            guard._record(
+                "network.connect",
+                host or str(address),
+                guard.READ,
+                "blocked",
+                "blocked by the test-suite network kill switch",
+            )
+            raise RuntimeError(
+                f"Test suite blocked an outbound connection to {host or address!r}. "
+                "No test may reach a real external service. Mock the transport "
+                "instead (httpx.MockTransport)."
+            )
+        return real_connect(self, address, *args, **kwargs)
+
+    def guarded_connect_ex(self, address, *args, **kwargs):
+        host = _host_of(address)
+        if host not in loopback:
+            guard._record(
+                "network.connect_ex",
+                host or str(address),
+                guard.READ,
+                "blocked",
+                "blocked by the test-suite network kill switch",
+            )
+            return 111  # ECONNREFUSED
+        return real_connect_ex(self, address, *args, **kwargs)
+
+    def blocked_getaddrinfo(*args, **kwargs):
+        # DNS resolution itself is harmless, but keeping it means a loopback
+        # URL still works end to end.
+        return real_getaddrinfo(*args, **kwargs)
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    monkeypatch.setattr(socket.socket, "connect", guarded_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", guarded_connect_ex)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked_getaddrinfo)
+    yield
+
+
+@pytest.fixture
+def allow_publish(request: pytest.FixtureRequest) -> object:
+    """Opt a single test in to exercising a guarded publishing code path.
+
+    Switches the guard from `dry_run` to `monitor`: the operation proceeds but
+    every attempt is written to the audit log, and the network kill switch above
+    still prevents a real connection. This makes an intentional publishing
+    test explicit and auditable rather than hidden.
+    """
+    from app.services import publishing_guard as guard
+
+    previous = os.environ.get("PUBLISHING_GUARD")
+    guard.arm_monitor()
+    try:
+        yield guard
+    finally:
+        if previous is None:
+            guard.disarm()
+            os.environ["PUBLISHING_GUARD"] = "dry_run"
+        else:
+            os.environ["PUBLISHING_GUARD"] = previous
+
+
+@pytest.fixture(autouse=True)
 def _no_media_network(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stop the publish path making real HTTP calls during tests.
 
@@ -231,6 +348,61 @@ def _no_media_network(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         storage_module, "verify_publicly_reachable", lambda urls, timeout=12.0: (True, None)
     )
+
+
+# --------------------------------------------------------------------------- #
+# Seeded-channel binding
+# --------------------------------------------------------------------------- #
+_SEEDED_BINDINGS = {
+    "company_facebook": ("buf_sma_fb_1", "facebook"),
+    "company_instagram": ("buf_sma_ig_1", "instagram"),
+    "company_linkedin": ("buf_sma_li_1", "linkedin"),
+}
+
+
+@pytest.fixture
+def bound_company_channels(client, db):
+    """Give the seeded demo channels a genuine Buffer binding.
+
+    Publishing now refuses a channel with no Buffer profile, because that is
+    the state the audit found silently failing. Any test that publishes through
+    a seeded channel asks for this fixture so it exercises the real, bound path
+    rather than relying on a permissive legacy shortcut.
+
+    The integration is created against the module's Buffer mock, so no socket is
+    opened and no credential is involved.
+    """
+    from app.models.entities import Channel, Integration
+    from app.services.credentials import build_cipher
+
+    settings = get_settings()
+    cipher = build_cipher(settings)
+    integration = Integration(
+        id="int_test_sma",
+        provider="buffer",
+        display_name="Test Buffer",
+        credential_encrypted=cipher.encrypt("tok_bound_company_channels_1"),
+        credential_hint="test_1",
+        external_organization_id="org_sma",
+        external_organization_name="Test workspace",
+        enabled=True,
+        status="connected",
+    )
+    db.add(integration)
+    db.commit()
+
+    for channel_id, (external_id, service) in _SEEDED_BINDINGS.items():
+        row = db.get(Channel, channel_id)
+        if row is None:
+            continue
+        row.external_channel_id = external_id
+        row.integration_id = integration.id
+        row.connection_status = "connected"
+        row.is_locked = False
+        row.queue_paused = False
+        row.platform = service
+    db.commit()
+    return integration.id
 
 
 @pytest.fixture

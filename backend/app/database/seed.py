@@ -1,19 +1,33 @@
-"""Idempotent seeding of account and channel metadata.
+"""First-run seeding of demo accounts and channels.
 
-This mirrors the account/channel identifiers configured inside the n8n
-workflow (node "04 - Load Account Configuration"). The identifiers must match
-exactly, because n8n is the component that resolves them to Buffer profiles.
+Two hard rules, both learned the hard way:
 
-Buffer profile ids are intentionally NOT seeded here - they stay in n8n.
-To add an account: add a row here AND add the matching entry in the n8n config.
+1. **Never resurrect anything.** The previous implementation ran on *every*
+   application boot and re-inserted its hardcoded channels whenever those ids
+   were absent, so a channel an administrator had deliberately removed came
+   back on the next restart or redeploy. Seeding now happens only on a database
+   that has no accounts at all - a genuine first run - and never afterwards.
+
+2. **Never overwrite operator edits.** The old code assigned
+   ``account.name``, ``account.type``, ``account.description`` and
+   ``account.color`` on every boot, silently reverting anything a human had
+   changed in Settings.
+
+This module is development/fixture data only. It is not a production
+initialisation path and is never used to create real company channels.
 """
 from __future__ import annotations
 
-from sqlalchemy import select
+import logging
+
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Account, Channel
 
+logger = logging.getLogger("app.database.seed")
+
+#: Demo data for a brand new local install. Not production content.
 SEED_ACCOUNTS: list[dict] = [
     {
         "id": "company",
@@ -49,38 +63,41 @@ SEED_ACCOUNTS: list[dict] = [
 ]
 
 
-def seed(db: Session) -> None:
-    """Insert any missing accounts/channels without touching existing rows."""
-    existing_accounts = {a.id for a in db.scalars(select(Account)).all()}
+def database_is_empty(db: Session) -> bool:
+    """True only when no account row exists at all."""
+    return int(db.scalar(select(func.count()).select_from(Account)) or 0) == 0
+
+
+def seed(db: Session) -> int:
+    """Create the demo brand, and only on a genuinely empty database.
+
+    Returns the number of rows inserted so the caller can log it. Safe to call
+    on every boot: after the first run it is a single cheap count.
+    """
+    if not database_is_empty(db):
+        logger.info("db.seed_skipped: the database already has accounts")
+        return 0
+
+    logger.warning(
+        "db.seed_demo_data: inserting the demo 'company' brand into an empty "
+        "database. This is development fixture data."
+    )
 
     for spec in SEED_ACCOUNTS:
-        account = db.get(Account, spec["id"])
-        if account is None:
-            account = Account(
-                id=spec["id"],
-                name=spec["name"],
-                type=spec["type"],
-                description=spec.get("description"),
-                logo=spec.get("logo"),
-                color=spec.get("color"),
-                active=True,
-                sort_order=spec.get("sort_order", 0),
-            )
-            db.add(account)
-            existing_accounts.add(spec["id"])
-        else:
-            # Refresh display metadata but never the user's active flag.
-            account.name = spec["name"]
-            account.type = spec["type"]
-            account.description = spec.get("description")
-            account.color = spec.get("color")
-
+        account = Account(
+            id=spec["id"],
+            name=spec["name"],
+            type=spec["type"],
+            description=spec.get("description"),
+            logo=spec.get("logo"),
+            color=spec.get("color"),
+            active=True,
+            sort_order=spec.get("sort_order", 0),
+        )
+        db.add(account)
         db.flush()
 
-        existing_channels = {c.id for c in db.scalars(select(Channel).where(Channel.account_id == account.id)).all()}
         for ch in spec["channels"]:
-            if ch["id"] in existing_channels:
-                continue
             db.add(
                 Channel(
                     id=ch["id"],
@@ -96,3 +113,4 @@ def seed(db: Session) -> None:
             )
 
     db.commit()
+    return 1 + sum(len(spec["channels"]) for spec in SEED_ACCOUNTS)

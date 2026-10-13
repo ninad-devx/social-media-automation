@@ -31,6 +31,11 @@ const COMMON_TIMEZONES = [
  * assumed, and no timestamp is ever produced by string concatenation. The
  * value handed to the parent is a naive local datetime plus an explicit
  * IANA timezone - exactly the contract the publishing engine expects.
+ *
+ * Scheduling architecture note: nothing here runs a job. A scheduled post is
+ * handed to Buffer with a `dueAt` and Buffer publishes it. There is no
+ * in-application queue, worker or cron, and the history rows for scheduled posts
+ * are created when the request is accepted - not when Buffer later fires them.
  */
 export function SchedulePicker({
   date,
@@ -71,8 +76,11 @@ export function SchedulePicker({
     <div className="schedule">
       <div className="schedule__row">
         <div className="schedule__field">
-          <span className="selector__label">Date</span>
+          <label className="selector__label" htmlFor="schedule-date">
+            Date
+          </label>
           <input
+            id="schedule-date"
             className="input"
             type="date"
             value={date}
@@ -83,8 +91,11 @@ export function SchedulePicker({
         </div>
 
         <div className="schedule__field schedule__field--time">
-          <span className="selector__label">Time</span>
+          <label className="selector__label" htmlFor="schedule-time">
+            Time
+          </label>
           <input
+            id="schedule-time"
             className="input"
             type="time"
             value={time}
@@ -95,13 +106,15 @@ export function SchedulePicker({
       </div>
 
       <div className="schedule__field">
-        <span className="selector__label">Timezone</span>
+        <span className="selector__label" id="schedule-tz-label">
+          Timezone
+        </span>
         <Select
           value={timezone}
           options={zoneOptions}
           onChange={(tz) => onChange({ date, time, timezone: tz })}
           disabled={disabled}
-          aria-label="Timezone"
+          aria-labelledby="schedule-tz-label"
         />
       </div>
 
@@ -146,6 +159,27 @@ export function isFuture(date: string, time: string, timezone: string): boolean 
   const dt = DateTime.fromISO(`${date}T${time}`, { zone: timezone });
   if (!dt.isValid) return false;
   return dt > DateTime.now().plus({ minutes: 1 });
+}
+
+/**
+ * A sensible default schedule: the next half hour, or the next five minutes if
+ * we are already past the half hour.
+ *
+ * Luxon DateTimes are immutable - `plus()` and `startOf()` both return new
+ * instances - so the result has to be reassigned. The previous version called
+ * them without keeping the result, which made the rounding a no-op.
+ */
+export function nextSensibleSlot(timezone: string): { date: string; time: string } {
+  const now = DateTime.now().setZone(timezone);
+  let candidate = now.plus({ hours: 2 });
+  candidate =
+    candidate.minute < 30
+      ? candidate.startOf("hour").plus({ minutes: 30 })
+      : candidate.startOf("minute").plus({ minutes: 5 });
+  return {
+    date: candidate.toFormat("yyyy-MM-dd"),
+    time: candidate.toFormat("HH:mm"),
+  };
 }
 
 function IconClock() {

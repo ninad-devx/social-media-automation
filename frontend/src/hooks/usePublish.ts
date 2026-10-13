@@ -39,7 +39,14 @@ export function usePublish(onSuccess?: (result: PublishResponse) => void) {
       try {
         const result = await publishingApi.publish(payload, keyRef.current);
         setState({ publishing: false, result, error: null });
-        onSuccess?.(result);
+        // The callback runs outside the try on purpose. It used to sit inside,
+        // so a throwing handler turned a successful publish into a reported
+        // failure and cleared the result the caller had just received.
+        try {
+          onSuccess?.(result);
+        } catch (err) {
+          console.error("publish success handler failed", err);
+        }
         return result;
       } catch (err) {
         const normalized =

@@ -19,6 +19,7 @@ from app.database.session import get_db
 from app.models.ai_entities import AIProvider
 from app.models.entities import Account, Channel, Integration, PublishLog
 from app.schemas.integration import SystemStatusOut
+from app.services import account_service
 from app.services.credentials import build_cipher
 from app.services.integration_service import (
     STATUS_CONNECTED,
@@ -86,7 +87,12 @@ def system_status(
         by_status[integration.status] = by_status.get(integration.status, 0) + 1
 
     channels = db.scalars(select(Channel)).all()
-    disconnected = [c for c in channels if c.connection_status == "reauth_required"]
+    active_channels = [c for c in channels if c.active and c.archived_at is None]
+    live_channels = [c for c in channels if c.archived_at is None]
+    disconnected = [c for c in active_channels if c.connection_status == "reauth_required"]
+    locked = [c for c in active_channels if c.is_locked]
+    queue_paused = [c for c in active_channels if c.queue_paused]
+    unbound = [c for c in live_channels if not c.integration_id]
 
     integrations_state = {
         "total": len(integrations),
@@ -94,9 +100,14 @@ def system_status(
         "connected": by_status.get(STATUS_CONNECTED, 0),
         "disabled": by_status.get(STATUS_DISABLED, 0),
         "needs_reauth": by_status.get(STATUS_REAUTH_REQUIRED, 0),
-        "channels_bound": sum(1 for c in channels if c.integration_id),
-        "channels_unbound": sum(1 for c in channels if not c.integration_id),
+        "channels_bound": sum(1 for c in live_channels if c.integration_id),
+        # "Unbound" counts live rows only. Counting archived ones made a
+        # correctly removed channel look like outstanding work forever.
+        "channels_unbound": len(unbound),
         "channels_disconnected": len(disconnected),
+        "channels_locked": len(locked),
+        "channels_queue_paused": len(queue_paused),
+        "channels_archived": sum(1 for c in channels if c.archived_at is not None),
     }
 
     # --- AI ----------------------------------------------------------------
@@ -137,7 +148,17 @@ def system_status(
             or 0
         ),
         "channels": len(channels),
-        "channels_active": sum(1 for c in channels if c.active),
+        # Split by state so an operator can see at a glance whether "channels"
+        # means live ones. The previous single pair counted archived rows as
+        # active, which made a correct removal look like a failure to remove.
+        "channels_active": len(active_channels),
+        "channels_inactive": sum(
+            1 for c in channels if not c.active and c.archived_at is None
+        ),
+        "channels_archived": sum(1 for c in channels if c.archived_at is not None),
+        "channels_publishable": sum(
+            1 for c in active_channels if account_service.is_publishable(c)
+        ),
     }
 
     return SystemStatusOut(

@@ -110,7 +110,7 @@ def test_an_empty_list_is_trivially_fine(monkeypatch) -> None:
 # --------------------------------------------------------------------------- #
 # publish blocks unreachable media
 # --------------------------------------------------------------------------- #
-def test_publishing_unreachable_media_is_refused(client, fake_n8n, monkeypatch) -> None:
+def test_publishing_unreachable_media_is_refused(client, fake_n8n, monkeypatch, bound_company_channels) -> None:
     """The whole point: fail loudly instead of publishing a post with no image."""
     from app.services import storage as storage_module
 
@@ -138,7 +138,7 @@ def test_publishing_unreachable_media_is_refused(client, fake_n8n, monkeypatch) 
     assert fake_n8n.calls == []
 
 
-def test_reachable_media_still_publishes(client, fake_n8n) -> None:
+def test_reachable_media_still_publishes(client, fake_n8n, bound_company_channels) -> None:
     r = client.post(
         "/api/publish",
         json={
@@ -172,7 +172,9 @@ def test_a_carousel_on_linkedin_is_refused() -> None:
     problems = validate_media_for_platform(
         "linkedin", [{"type": "image", "url": "a"}, {"type": "image", "url": "b"}]
     )
-    assert any("one attachment" in p for p in problems)
+    # The single rule set now phrases this with the actual limit rather than a
+    # generic "one attachment", so the operator sees the number.
+    assert any("at most 1 attachment" in p for p in problems)
 
 
 def test_a_valid_instagram_carousel_is_accepted() -> None:
@@ -199,7 +201,8 @@ def test_mixing_video_and_images_is_refused() -> None:
 
 def test_instagram_without_media_is_refused() -> None:
     assert requires_media("instagram") is True
-    assert any("at least one image" in p for p in validate_media_for_platform("instagram", []))
+    problems = validate_media_for_platform("instagram", [])
+    assert any("needs at least 1 attachment" in p for p in problems), problems
 
 
 def test_an_attachment_without_a_url_is_refused() -> None:
@@ -216,7 +219,7 @@ def test_capabilities_handle_an_unknown_platform() -> None:
 # --------------------------------------------------------------------------- #
 # Quick Publish appears in Campaigns
 # --------------------------------------------------------------------------- #
-def test_quick_publish_is_recorded_as_a_campaign(client, fake_n8n) -> None:
+def test_quick_publish_is_recorded_as_a_campaign(client, fake_n8n, bound_company_channels) -> None:
     r = client.post(
         "/api/publish",
         json={
@@ -243,7 +246,7 @@ def test_quick_publish_is_recorded_as_a_campaign(client, fake_n8n) -> None:
     assert len(post["media"]) == 1
 
 
-def test_quick_publish_without_media_is_still_recorded(client, fake_n8n) -> None:
+def test_quick_publish_without_media_is_still_recorded(client, fake_n8n, bound_company_channels) -> None:
     client.post(
         "/api/publish",
         json={
@@ -260,7 +263,7 @@ def test_quick_publish_without_media_is_still_recorded(client, fake_n8n) -> None
     assert campaign["posts"][0]["media"] == []
 
 
-def test_a_failing_publish_creates_no_campaign(client, fake_n8n) -> None:
+def test_a_failing_publish_creates_no_campaign(client, fake_n8n, bound_company_channels) -> None:
     fake_n8n.fail(code="BUFFER_SERVER_ERROR")
     r = client.post(
         "/api/publish",
@@ -277,7 +280,7 @@ def test_a_failing_publish_creates_no_campaign(client, fake_n8n) -> None:
     assert client.get("/api/ai/campaigns").json()["items"] == []
 
 
-def test_campaigns_can_be_filtered_by_source(client, fake_n8n) -> None:
+def test_campaigns_can_be_filtered_by_source(client, fake_n8n, bound_company_channels) -> None:
     client.post(
         "/api/publish",
         json={
@@ -301,7 +304,7 @@ def test_campaigns_can_be_filtered_by_source(client, fake_n8n) -> None:
     assert {c["source"] for c in everything} == {"quick_publish", "ai_campaign"}
 
 
-def test_ai_campaigns_are_tagged_as_such(client, fake_adapter, provider_row) -> None:
+def test_ai_campaigns_are_tagged_as_such(client, fake_adapter, provider_row, bound_company_channels) -> None:
     from tests.conftest import make_campaign
 
     campaign = make_campaign(client, [{"account_id": "company", "channel_id": "company_facebook"}])
@@ -312,7 +315,7 @@ def test_ai_campaigns_are_tagged_as_such(client, fake_adapter, provider_row) -> 
 # --------------------------------------------------------------------------- #
 # media editing on a campaign post
 # --------------------------------------------------------------------------- #
-def test_media_can_be_replaced_on_a_campaign_post(client, fake_adapter, provider_row) -> None:
+def test_media_can_be_replaced_on_a_campaign_post(client, fake_adapter, provider_row, bound_company_channels) -> None:
     from tests.conftest import make_campaign, wait_for_generation
 
     campaign = make_campaign(client, [{"account_id": "company", "channel_id": "company_linkedin"}])

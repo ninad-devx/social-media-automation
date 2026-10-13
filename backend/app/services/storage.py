@@ -22,12 +22,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from app.core.config import Settings, get_settings
+from app.core.config import Settings
 from app.core.logging import get_logger
 from app.services import media_signing
 
-# Resolved once so signed URLs are deterministic within a process.
-_settings = get_settings()
 
 logger = get_logger("app.media")
 
@@ -104,12 +102,25 @@ class MediaStorage(ABC):
 
 
 class LocalDiskStorage(MediaStorage):
-    """Stores files on the local filesystem and serves them from /api/media."""
+    """Stores files on the local filesystem and serves them from /api/media.
 
-    def __init__(self, root: Path, base_url: str, publicly_reachable: bool = False) -> None:
+    The `Settings` object is held rather than re-read from the environment. The
+    previous version captured a module-level snapshot at import time and signed
+    URLs with it, so a runtime override of the storage backend or the signing
+    key could leave signing and serving disagreeing.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        base_url: str,
+        publicly_reachable: bool = False,
+        settings: Settings | None = None,
+    ) -> None:
         self._root = root
         self._base_url = base_url
         self._publicly_reachable = publicly_reachable
+        self._settings = settings
         self._root.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -131,7 +142,7 @@ class LocalDiskStorage(MediaStorage):
         The asset id is already 128 random bits, so this is defence in depth:
         knowing an id from elsewhere is not enough to download the file.
         """
-        return f"{self.public_url(asset_id)}{media_signing.sign(asset_id, _settings)}"
+        return f"{self.public_url(asset_id)}{media_signing.sign(asset_id, self._settings)}"
 
     # -- interface --------------------------------------------------------- #
     def save(self, stream: BinaryIO, kind: MediaKind, original_name: str, size: int) -> StoredMedia:
@@ -229,6 +240,20 @@ class S3ObjectStorage(MediaStorage):
 
     def public_url(self, asset_id: str) -> str:
         return f"{self._public_base}/{asset_id}"
+
+    def signed_public_url(self, asset_id: str) -> str:
+        """Public URL for an object already served by the bucket.
+
+        Object storage is public by necessity - Buffer fetches the bytes with
+        no credential - so there is nothing to sign here. The method exists
+        because the upload route calls it on whichever backend it built; without
+        it, every upload under MEDIA_STORAGE_BACKEND=s3 raised
+        AttributeError and returned 500.
+
+        The access control is the 128-bit unguessable object id plus the
+        bucket's own policy, not an HMAC tag.
+        """
+        return self.public_url(asset_id)
 
     # -- interface --------------------------------------------------------- #
     def save(self, stream: BinaryIO, kind: MediaKind, original_name: str, size: int) -> StoredMedia:
@@ -380,4 +405,5 @@ def build_storage(settings: Settings) -> MediaStorage:
         root=settings.media_path,
         base_url=settings.media_base_url,
         publicly_reachable=bool(settings.public_media_base_url.strip()),
+        settings=settings,
     )

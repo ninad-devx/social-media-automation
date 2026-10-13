@@ -25,6 +25,12 @@ export interface PublishRequest {
   publish_mode: PublishMode;
   scheduled_at: string | null;
   timezone: string;
+  /**
+   * Explicit post type. The backend refuses anything the selected platform
+   * cannot do, so this is never silently downgraded to a feed post. Omit to
+   * use the platform default.
+   */
+  post_type?: string | null;
 }
 
 /** Successful publish / schedule result as returned by our own backend. */
@@ -59,17 +65,21 @@ export interface PublishLogEntry {
   id: number;
   request_id: string;
   account_id: string;
+  account_name?: string | null;
   channel_id: string;
   platform: string;
   content_preview: string;
   media_count: number;
   publish_mode: string;
+  /** The post type the attempt resolved to. Null on rows predating the field. */
+  post_type?: string | null;
   scheduled_at: string | null;
   timezone: string;
   status: string;
   buffer_publication_id: string | null;
   external_link: string | null;
   error_code: string | null;
+  error_message?: string | null;
   created_at: string | null;
 }
 

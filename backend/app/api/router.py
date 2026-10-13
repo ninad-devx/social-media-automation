@@ -12,6 +12,7 @@ from app.api import (
     channels,
     integrations,
     media,
+    platforms,
     publishing,
     system,
 )
@@ -29,6 +30,7 @@ api_router.include_router(ai_providers.router)
 api_router.include_router(ai_instructions.router)
 api_router.include_router(ai_campaigns.router)
 api_router.include_router(integrations.router)
+api_router.include_router(platforms.router)
 api_router.include_router(system.router)
 
 

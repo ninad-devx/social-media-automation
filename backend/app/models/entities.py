@@ -14,7 +14,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.base import Base, TimestampMixin
@@ -106,6 +116,18 @@ class Channel(TimestampMixin, Base):
     __tablename__ = "channels"
     __table_args__ = (
         UniqueConstraint("account_id", "id", name="uq_channels_account_id_id"),
+        # One Buffer profile may be claimed by at most one local channel row.
+        # This is what makes "move a channel to another brand" safe: releasing
+        # the assignment on archive frees the value, and the database refuses a
+        # second claim. NULLs do not conflict, so the seeded legacy rows (which
+        # have no external id) are unaffected.
+        Index(
+            "uq_channels_external_channel_id",
+            "external_channel_id",
+            unique=True,
+            postgresql_where=text("external_channel_id IS NOT NULL"),
+            sqlite_where=text("external_channel_id IS NOT NULL"),
+        ),
         Index("ix_channels_account_id", "account_id"),
         Index("ix_channels_platform", "platform"),
     )
@@ -148,6 +170,17 @@ class Channel(TimestampMixin, Base):
     capabilities_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # --- archival -------------------------------------------------------
+    # `active=False` alone is ambiguous: it can mean "paused by the operator" or
+    # "removed". Archival is the explicit removal, and it is what releases the
+    # external Buffer assignment so the same profile can be imported into
+    # another brand later.
+    #
+    # Rows are never hard-deleted: publishing history and campaign posts both
+    # reference `channel_id`, and that audit trail has to survive.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_reason: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     account: Mapped[Account] = relationship(back_populates="channels")
     integration: Mapped[Integration | None] = relationship(back_populates="channels")
 
@@ -171,6 +204,11 @@ class PublishLog(TimestampMixin, Base):
     content_preview: Mapped[str] = mapped_column(String(280), nullable=False, default="")
     media_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     publish_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Explicit post type the request resolved to ("post", "reel", "story", ...).
+    # Nullable with no default so existing rows are untouched and the column is
+    # only ever added; old history reads as "not recorded" rather than claiming
+    # a type we cannot verify was used.
+    post_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     timezone: Mapped[str] = mapped_column(String(64), nullable=False, default="Asia/Dhaka")
@@ -209,6 +247,22 @@ class IdempotencyRecord(TimestampMixin, Base):
     """Stores the outcome of a request keyed by Idempotency-Key.
 
     Prevents an accidental double submit from publishing the same post twice.
+
+    `state` is one of:
+
+    ``in_progress``  an attempt is running right now. A second concurrent
+                     request with the same key is refused. If the process died
+                     mid-attempt the row is left behind, so an attempt older
+                     than the staleness window is taken over rather than blocking
+                     the key forever.
+    ``completed``    the publish succeeded (or was scheduled). Replaying the
+                     same key returns the stored response instead of publishing
+                     again, and reusing the key with *different* content is
+                     refused outright.
+    ``failed``       the attempt failed and nothing was published. The key stays
+                     retryable, which is what the audit found impossible: a
+                     failed post used to be permanently wedged at
+                     DUPLICATE_SUBMISSION.
     """
 
     __tablename__ = "idempotency_records"
@@ -218,3 +272,8 @@ class IdempotencyRecord(TimestampMixin, Base):
     state: Mapped[str] = mapped_column(String(16), nullable=False, default="in_progress")
     response_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # How many attempts this key has been through. Makes retries traceable
+    # without changing the key.
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Last error from a failed attempt, so a retry decision is informed.
+    last_error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)

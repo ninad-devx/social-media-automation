@@ -394,26 +394,52 @@ class TestChannelDiscovery:
         channels = client.get("/api/accounts/sortpi/channels").json()
         assert channels[0]["queue_paused"] is True
 
-    def test_manual_binding_when_discovery_is_unavailable(self, client, brand):
-        """The documented fallback: operator supplies the Buffer channel id."""
-        make_integration(client, key="tok_manual_777777")
+    def test_manual_binding_when_discovery_is_unavailable(self, client, buffer_mock, brand):
+        """The documented fallback: operator supplies the Buffer channel id.
+
+        The integration must be named explicitly. The previous version accepted a
+        bare external id and produced a channel that looked linked but could
+        never publish, because nothing wrote `integration_id`.
+        """
+        integration = make_integration(client, key="tok_manual_777777")
         response = client.post(
             "/api/channels/bind",
             json={
                 "account_id": "sortpi",
-                "external_channel_id": "chan_entered_by_hand",
-                "platform": "twitter",
-                "display_name": "CEO on X",
+                "integration_id": integration["id"],
+                "external_channel_id": "chan_instagram_1",
+                "platform": "instagram",
+                "display_name": "CEO on Instagram",
             },
         )
-        assert response.status_code == 200
+        assert response.status_code == 200, response.text
         body = response.json()
-        assert body["platform"] == "twitter"
-        assert body["display_name"] == "CEO on X"
+        assert body["platform"] == "instagram"
+        assert body["display_name"] == "CEO on Instagram"
+        # The whole point of C1: a bound channel is genuinely bound.
+        assert body["integration_id"] == integration["id"]
+        assert body["publishable"] is True
 
         channels = client.get("/api/accounts/sortpi/channels").json()
         assert len(channels) == 1
-        assert channels[0]["display_name"] == "CEO on X"
+        assert channels[0]["display_name"] == "CEO on Instagram"
+        assert channels[0]["integration_id"] == integration["id"]
+
+    def test_manual_binding_without_an_integration_is_refused(self, client, buffer_mock, brand):
+        """There is no safe guess, so an unbound binding must be rejected."""
+        make_integration(client, key="tok_manual_777778")
+        response = client.post(
+            "/api/channels/bind",
+            json={
+                "account_id": "sortpi",
+                "external_channel_id": "chan_instagram_1",
+                "platform": "instagram",
+            },
+        )
+        assert response.status_code == 422
+        assert any(
+            d.get("field") == "integration_id" for d in response.json().get("errors", [])
+        )
 
     def test_channel_can_be_disabled_without_being_deleted(self, client, buffer_mock, brand):
         integration = make_integration(client)
@@ -431,19 +457,26 @@ class TestChannelDiscovery:
         admin = client.get("/api/accounts/sortpi/channels?include_inactive=true").json()
         assert len(admin) == 1
 
-    def test_channels_that_predate_integrations_are_not_flagged_as_broken(self, client):
-        """Existing installs keep publishing through n8n; don't alarm the user.
+    def test_channels_that_predate_integrations_are_reported_as_unbound(self, client):
+        """A channel with no Buffer binding must never claim to be publishable.
 
-        These seeded channels have no integration row. The backend cannot know
-        whether the n8n workflow holds a mapping for them, so it must not claim
-        they cannot publish.
+        The audit found this backwards: `is_publishable` returned True for any
+        channel without an `external_channel_id`, on the reasoning that the
+        legacy n8n registry might still know the id. The result was a channel
+        that rendered green everywhere and then failed on every publish with
+        CHANNEL_NOT_BOUND. Reporting it honestly costs nothing - the publish
+        attempt is still the final authority - and the UI can now explain the
+        state instead of hiding it.
         """
         channels = client.get("/api/accounts/company/channels").json()
         assert len(channels) == 3
         for channel in channels:
             assert channel["integration_id"] is None
             assert channel["connection_status"] == "unknown"
-            assert channel["publishable"] is True
+            assert channel["publishable"] is False
+            # And it must say why, so no selector has to invent a reason.
+            assert channel["publish_blocked_code"] == "CHANNEL_NOT_BOUND"
+            assert channel["publish_blocked_reason"]
 
 
 class TestLegacyCompatibility:
@@ -458,8 +491,8 @@ class TestLegacyCompatibility:
         """PUBLISH_ENGINE defaults to n8n, so an existing install is unchanged."""
         assert client.get("/api/system/status").json()["publish_engine"] == "n8n"
 
-    def test_legacy_publish_still_reaches_the_n8n_webhook(self, client, fake_n8n):
-        """With no integration bound, publishing goes to n8n exactly as before."""
+    def test_legacy_publish_still_reaches_the_n8n_webhook(self, client, fake_n8n, bound_company_channels):
+        """The default n8n engine is unchanged for a bound channel."""
         response = client.post(
             "/api/publish",
             json={
@@ -494,7 +527,7 @@ class TestPublishingSafety:
         return integration, sync["channel_ids"][0]
 
     def test_direct_publishing_sends_the_resolved_buffer_channel_id(
-        self, client, buffer_mock, direct_engine, brand
+        self, client, buffer_mock, direct_engine, brand, allow_publish
     ):
         _, channel_id = self._bind(client)
 
@@ -577,7 +610,7 @@ class TestPublishingSafety:
         assert response.json()["error"]["code"] == "CHANNEL_NOT_BELONG_TO_ACCOUNT"
 
     def test_failed_publish_is_recorded_as_failed(
-        self, client, buffer_mock, direct_engine, brand, monkeypatch
+        self, client, buffer_mock, direct_engine, brand, monkeypatch, allow_publish
     ):
         _, channel_id = self._bind(client)
 
@@ -613,7 +646,7 @@ class TestPublishingSafety:
         assert history["items"][0]["status"] == "failed"
 
     def test_scheduled_publish_sends_due_at_to_buffer(
-        self, client, buffer_mock, direct_engine, brand
+        self, client, buffer_mock, direct_engine, brand, allow_publish
     ):
         from datetime import datetime, timedelta, timezone as dt_timezone
 
@@ -673,7 +706,7 @@ class TestInternalEndpoint:
         assert response.status_code == 401
 
     def test_correct_secret_publishes_and_records_history(
-        self, client, buffer_mock, internal_secret, brand
+        self, client, buffer_mock, internal_secret, brand, allow_publish
     ):
         integration = make_integration(client)
         sync = client.post(
@@ -689,6 +722,11 @@ class TestInternalEndpoint:
                 "channel_id": sync["channel_ids"][0],
                 "content": "via the generic workflow",
                 "publish_mode": "NOW",
+                # Instagram refuses a text-only post, and the internal route now
+                # enforces that itself rather than trusting the caller - it is a
+                # separate entry point into the Buffer call, so bypassing the
+                # rules through n8n must not be possible.
+                "media": [{"type": "image", "url": "https://cdn.example/img.png"}],
             },
             headers={"X-Internal-Secret": "correct-horse"},
         )
@@ -699,8 +737,61 @@ class TestInternalEndpoint:
         assert body["buffer_publication_id"] == "post_abc"
 
         history = client.get("/api/publish/history").json()
+        # Exactly one row: the callback updates the attempt rather than adding a
+        # second record for the same publish.
+        assert history["total"] == 1
         assert history["items"][0]["status"] == "published"
         assert history["items"][0]["request_id"] == "req_123"
+
+    def test_internal_endpoint_enforces_media_rules(
+        self, client, buffer_mock, internal_secret, brand, allow_publish
+    ):
+        """The n8n callback cannot be used to bypass platform rules."""
+        integration = make_integration(client)
+        sync = client.post(
+            f"/api/integrations/{integration['id']}/sync",
+            json={"account_id": "sortpi", "external_channel_ids": ["chan_instagram_1"]},
+        ).json()
+
+        response = client.post(
+            "/internal/publish",
+            json={
+                "request_id": "req_media_rules",
+                "account_id": "sortpi",
+                "channel_id": sync["channel_ids"][0],
+                "content": "text only on instagram",
+                "publish_mode": "NOW",
+            },
+            headers={"X-Internal-Secret": "correct-horse"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "MEDIA_INVALID"
+
+    def test_internal_endpoint_rejects_an_unsupported_post_type(
+        self, client, buffer_mock, internal_secret, brand, allow_publish
+    ):
+        """An unknown post type is refused, never downgraded to a feed post."""
+        integration = make_integration(client)
+        sync = client.post(
+            f"/api/integrations/{integration['id']}/sync",
+            json={"account_id": "sortpi", "external_channel_ids": ["chan_instagram_1"]},
+        ).json()
+
+        response = client.post(
+            "/internal/publish",
+            json={
+                "request_id": "req_bad_type",
+                "account_id": "sortpi",
+                "channel_id": sync["channel_ids"][0],
+                "content": "with a type this platform cannot do",
+                "publish_mode": "NOW",
+                "post_type": "long_form",
+                "media": [{"type": "image", "url": "https://cdn.example/img.png"}],
+            },
+            headers={"X-Internal-Secret": "correct-horse"},
+        )
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "POST_TYPE_UNSUPPORTED"
 
     def test_internal_endpoint_rejects_unbound_channel(
         self, client, buffer_mock, internal_secret

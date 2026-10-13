@@ -137,6 +137,9 @@ export interface SystemStatus {
     accounts_active: number;
     channels: number;
     channels_active: number;
+    channels_inactive?: number;
+    channels_archived?: number;
+    channels_publishable?: number;
   };
   recent_failures: Array<{
     request_id: string;

@@ -17,6 +17,7 @@ export function CalendarPage() {
   const { data: accounts } = useAccounts();
   const [byDay, setByDay] = useState<Record<string, ScheduledItem[]>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -41,7 +42,10 @@ export function CalendarPage() {
         setByDay(grouped);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
+        setError(
+          err instanceof Error ? err.message : "Could not load the calendar.",
+        );
         setByDay({});
         setLoading(false);
       });
@@ -80,6 +84,12 @@ export function CalendarPage() {
           </div>
         )}
 
+        {error && (
+          <p className="notice notice--error" role="alert">
+            {error}
+          </p>
+        )}
+
         {loading && <div className="skeleton" style={{ height: 140 }} />}
 
         {scheduledCount > 0 && (
@@ -97,7 +107,7 @@ export function CalendarPage() {
                         <div className="cal__body">
                           <span className="cal__text">{item.content}</span>
                           <span className="cal__meta">
-                            {item.account_id} · {meta.label} · {item.timezone}
+                            {item.account_name ?? item.account_id} · {meta.label} · {item.timezone}
                           </span>
                         </div>
                         <Badge tone="info">scheduled</Badge>
@@ -127,6 +137,7 @@ interface ScheduledItem {
   platform: string;
   channel_id: string;
   account_id: string;
+  account_name?: string | null;
   time: string;
   timezone: string;
 }
