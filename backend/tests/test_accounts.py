@@ -94,6 +94,35 @@ def test_list_channels_unknown_account_is_404(client: TestClient) -> None:
     assert r.json()["error"]["code"] == "ACCOUNT_NOT_FOUND"
 
 
+def test_a_channel_can_be_deleted(client: TestClient) -> None:
+    """A leftover channel must be removable, not just hideable.
+
+    Disconnecting an integration only marks its channels disconnected, so
+    without a delete the row sits in every brand's list forever.
+    """
+    before = client.get("/api/accounts/company/channels").json()
+    assert len(before) == 3
+
+    r = client.delete("/api/channels/company_facebook")
+    assert r.status_code == 204
+
+    after = client.get("/api/accounts/company/channels").json()
+    assert [c["id"] for c in after] == ["company_instagram", "company_linkedin"]
+
+
+def test_deleting_an_unknown_channel_is_404(client: TestClient) -> None:
+    r = client.delete("/api/channels/ch_does_not_exist")
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "CHANNEL_NOT_FOUND"
+
+
+def test_deleting_a_channel_leaves_the_account_alone(client: TestClient) -> None:
+    client.delete("/api/channels/company_facebook")
+    accounts = client.get("/api/accounts").json()
+    assert [a["id"] for a in accounts] == ["company"]
+    assert accounts[0]["channel_count"] == 2
+
+
 def test_health_endpoint(client: TestClient) -> None:
     r = client.get("/api/health")
     assert r.status_code == 200

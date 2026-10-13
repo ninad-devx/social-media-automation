@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import ApiKeyDep, SettingsDep
+from app.core.config import Settings
 from app.core.logging import get_logger
 from app.database.session import get_db
 from app.models.ai_entities import AIProvider
@@ -44,6 +45,30 @@ def _db_status(db: Session) -> dict:
         return {"ok": False, "error": type(exc).__name__}
 
 
+def _media_status(settings: Settings) -> dict:
+    """Whether Buffer can download a freshly uploaded file.
+
+    Buffer fetches every attachment itself from a public URL, so what matters
+    is only whether that URL is reachable from the internet. Object storage is
+    always reachable; local disk is reachable when PUBLIC_MEDIA_BASE_URL points
+    at a public address, because /api/media/public is signed and unauthenticated.
+
+    The warning below used to be driven by `media_storage_backend == "s3"`
+    alone, which contradicted the `publishable` field reported right beside it
+    and told operators to configure S3 on deployments where signed public URLs
+    already worked. Both now read from this one function.
+    """
+    public_base = settings.public_media_base_url.strip()
+    is_local_url = public_base.startswith(("http://localhost", "http://127.0.0.1"))
+    public_url_ok = bool(public_base) and not is_local_url
+
+    return {
+        "backend": settings.media_storage_backend,
+        "public_base_url_configured": bool(public_base),
+        "publishable": settings.media_storage_backend == "s3" or public_url_ok,
+    }
+
+
 @router.get("/system/status", response_model=SystemStatusOut, dependencies=[ApiKeyDep])
 def system_status(
     db: DbSession,
@@ -53,6 +78,7 @@ def system_status(
     """Aggregated health for the Settings dashboard."""
     service = IntegrationService(db, settings)
     integrations = service.list_integrations()
+    media_state = _media_status(settings)
 
     # --- n8n ---------------------------------------------------------------
     n8n = N8nService(settings)
@@ -176,15 +202,7 @@ def system_status(
         database=_db_status(db),
         n8n=n8n_state,
         encryption=encryption,
-        media={
-            "backend": settings.media_storage_backend,
-            "public_base_url_configured": bool(settings.public_media_base_url),
-            # Buffer downloads media itself, so a localhost URL cannot work.
-            "publishable": settings.media_storage_backend == "s3"
-            or bool(settings.public_media_base_url)
-            and not settings.public_media_base_url.startswith("http://localhost")
-            and not settings.public_media_base_url.startswith("http://127.0.0.1"),
-        },
+        media=media_state,
         integrations=integrations_state,
         ai=ai,
         counts=counts,
@@ -194,7 +212,7 @@ def system_status(
             encryption=encryption,
             integrations_state=integrations_state,
             n8n=n8n_state,
-            media_ok=(settings.media_storage_backend == "s3"),
+            media_ok=media_state["publishable"],
             failures=len(recent_failures),
         ),
     )

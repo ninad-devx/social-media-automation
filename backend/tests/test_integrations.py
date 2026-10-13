@@ -846,6 +846,42 @@ class TestSystemStatus:
     def test_direct_engine_flag_is_reported(self, client, direct_engine):
         assert client.get("/api/system/status").json()["publish_engine"] == "direct"
 
+    def test_public_media_url_silences_the_s3_warning(self, client, monkeypatch):
+        """A deployment with signed public URLs must not be told to set up S3.
+
+        The warning used to key off `media_storage_backend == "s3"` alone while
+        the `publishable` field beside it already accounted for a public base
+        URL, so a correctly configured deployment was told its media was
+        unusable.
+        """
+        settings = get_settings()
+        monkeypatch.setattr(settings, "media_storage_backend", "local", raising=False)
+        monkeypatch.setattr(
+            settings,
+            "public_media_base_url",
+            "https://api.example.com/api/media/public",
+            raising=False,
+        )
+
+        body = client.get("/api/system/status").json()
+
+        assert body["media"]["backend"] == "local"
+        assert body["media"]["publishable"] is True
+        media_issues = [i for i in body["issues"] if i["area"] == "media"]
+        assert media_issues == [], "public media URL was flagged despite being reachable"
+
+    def test_localhost_media_url_is_still_flagged(self, client, monkeypatch):
+        settings = get_settings()
+        monkeypatch.setattr(settings, "media_storage_backend", "local", raising=False)
+        monkeypatch.setattr(
+            settings, "public_media_base_url", "http://localhost:8000/api/media/public", raising=False
+        )
+
+        body = client.get("/api/system/status").json()
+
+        assert body["media"]["publishable"] is False
+        assert [i for i in body["issues"] if i["area"] == "media"]
+
     def test_missing_encryption_key_is_reported_as_an_issue(self, client, monkeypatch):
         monkeypatch.setattr(get_settings(), "credential_encryption_key", None, raising=False)
         monkeypatch.setattr(get_settings(), "ai_encryption_key", None, raising=False)

@@ -12,6 +12,7 @@ import { StatusBadge } from "../../components/settings/StatusBadge";
 import { ApiError } from "../../services/api";
 import { integrationsApi } from "../../services/integrations";
 import { accountsApi } from "../../services/accounts";
+import { notifyChannelsChanged } from "../../hooks/useChannels";
 import type { Account } from "../../types/account";
 import type { DiscoveredChannel, Integration } from "../../types/integration";
 
@@ -199,6 +200,9 @@ export function BufferIntegrationsPage() {
       `Imported ${ids.length} channel(s). They are now available in Quick Publisher and AI Automation.`,
     );
     setSelection((prev) => ({ ...prev, [integration.id]: [] }));
+    // The import just changed the account's channel list, so every screen
+    // holding a stale copy (Quick Publish, Dashboard, Accounts) has to refetch.
+    notifyChannelsChanged();
   };
 
   /** Create a brand inline and immediately target it for import. */

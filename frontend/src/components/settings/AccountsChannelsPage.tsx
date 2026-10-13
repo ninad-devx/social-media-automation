@@ -21,6 +21,7 @@ import { ApiError } from "../../services/api";
 import { accountsApi } from "../../services/accounts";
 import { channelsAdminApi, channelsApi } from "../../services/integrations";
 import { integrationsApi } from "../../services/integrations";
+import { notifyChannelsChanged } from "../../hooks/useChannels";
 import { useAllPlatforms } from "../../hooks/usePlatformCapability";
 import type { Account } from "../../types/account";
 import { channelCaption, type Channel } from "../../types/channel";
@@ -115,6 +116,13 @@ export function AccountsChannelsPage() {
       try {
         await action();
         setBanner({ tone: "success", message: success });
+        // Every action here changes this brand's channel list. `useChannels` is
+        // mounted separately in Quick Publish, Dashboard and Accounts and each
+        // only refetched when the selected *account* changed, so linking or
+        // removing a channel left the other screens showing a stale list, which
+        // read as "the link did not work". Notifying here covers every mutation
+        // instead of only the ones someone remembered to wire up.
+        notifyChannelsChanged();
       } catch (err) {
         setBanner({
           tone: "danger",
