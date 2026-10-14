@@ -283,6 +283,14 @@ class CampaignCreate(BaseModel):
     drafts: list[CampaignDraftIn] = Field(default_factory=list)
 
 
+class CampaignDraftsAppend(BaseModel):
+    """Hand-written posts to add to a campaign that already exists."""
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    drafts: list[CampaignDraftIn] = Field(min_length=1)
+
+
 class CampaignUpdate(BaseModel):
     name: str | None = None
     topic: str | None = None

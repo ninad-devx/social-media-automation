@@ -11,17 +11,32 @@ import pytest
 class FakeS3Object:
     def __init__(self, body: bytes) -> None:
         self._body = body
+        self._offset = 0
 
-    def read(self) -> bytes:
-        return self._body
+    def read(self, size: int = -1) -> bytes:
+        if size is None or size < 0:
+            size = len(self._body) - self._offset
+        chunk = self._body[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
+
+    def close(self) -> None:
+        pass
 
 
 class FakeS3Client:
-    """A minimal, in-memory stand-in for boto3's S3 client."""
+    """A minimal, in-memory stand-in for boto3's S3 client.
+
+    Multipart is modelled because the production path uses it: anything past
+    `_S3_SINGLE_PUT_LIMIT` is streamed in parts, so a fake without these
+    methods fails on every large upload.
+    """
 
     def __init__(self) -> None:
         self.objects: dict[str, bytes] = {}
         self.content_types: dict[str, str] = {}
+        self.uploads: dict[str, dict] = {}
+        self.aborted: list[str] = []
 
     def put_object(self, *, Bucket, Key, Body, ContentType, CacheControl):  # noqa: N803
         data = Body if isinstance(Body, bytes) else Body.read()
@@ -31,10 +46,34 @@ class FakeS3Client:
     def get_object(self, *, Bucket, Key):  # noqa: N803
         if Key not in self.objects:
             raise KeyError(Key)
-        return {"Body": FakeS3Object(self.objects[Key])}
+        body = self.objects[Key]
+        return {"Body": FakeS3Object(body), "ContentLength": len(body)}
 
     def delete_object(self, *, Bucket, Key):  # noqa: N803
         self.objects.pop(Key, None)
+
+    # -- multipart ------------------------------------------------------- #
+    def create_multipart_upload(self, *, Bucket, Key, ContentType, CacheControl):  # noqa: N803
+        upload_id = f"mpu-{len(self.uploads) + 1}"
+        self.uploads[upload_id] = {"key": Key, "parts": {}, "content_type": ContentType}
+        return {"UploadId": upload_id}
+
+    def upload_part(self, *, Bucket, Key, UploadId, PartNumber, Body):  # noqa: N803
+        data = Body if isinstance(Body, bytes) else Body.read()
+        self.uploads[UploadId]["parts"][PartNumber] = data
+        return {"ETag": f'"etag-{PartNumber}"'}
+
+    def complete_multipart_upload(self, *, Bucket, Key, UploadId, MultipartUpload):  # noqa: N803
+        meta = self.uploads.pop(UploadId)
+        parts = sorted(p["PartNumber"] for p in MultipartUpload["Parts"])
+        self.objects[Key] = b"".join(meta["parts"][n] for n in parts)
+        self.content_types[Key] = meta["content_type"]
+        return {}
+
+    def abort_multipart_upload(self, *, Bucket, Key, UploadId):  # noqa: N803
+        self.uploads.pop(UploadId, None)
+        self.aborted.append(UploadId)
+        return {}
 
 
 PNG = (

@@ -307,3 +307,143 @@ def test_post_type_can_be_corrected_after_the_fact(client) -> None:
     )
     assert cleared.status_code == 200, cleared.text
     assert cleared.json()["post_type"] is None
+
+
+# --------------------------------------------------------------------------- #
+# Adding to a campaign that already exists
+# --------------------------------------------------------------------------- #
+def _append(client, campaign_id, drafts):
+    return client.post(f"/api/ai/campaigns/{campaign_id}/drafts", json={"drafts": drafts})
+
+
+def test_a_second_channel_can_be_added_to_an_existing_draft_campaign(client) -> None:
+    """Quick Publish composes one post at a time, so a campaign fills over time."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "First post"}],
+    ).json()
+
+    r = _append(
+        client,
+        campaign["id"],
+        [{"account_id": "company", "channel_id": INSTAGRAM, "content": "Second post"}],
+    )
+    assert r.status_code == 200, r.text
+
+    body = r.json()
+    assert body["target_count"] == 2
+    posts = {p["channel_id"]: p for p in body["posts"]}
+    assert posts[LINKEDIN]["effective_content"] == "First post"
+    assert posts[INSTAGRAM]["effective_content"] == "Second post"
+
+
+def test_appending_does_not_create_a_second_campaign(client) -> None:
+    """The old behaviour: every addition became its own campaign."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "One"}],
+    ).json()
+    _append(client, campaign["id"], [{"account_id": "company", "channel_id": INSTAGRAM, "content": "Two"}])
+
+    page = client.get("/api/ai/campaigns").json()
+    assert page["total"] == 1
+
+
+def test_appending_keeps_media_and_format_from_the_composer(client) -> None:
+    """A reel added to an existing campaign has to stay a reel, with its video."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "One"}],
+    ).json()
+
+    r = _append(
+        client,
+        campaign["id"],
+        [
+            {
+                "account_id": "company",
+                "channel_id": INSTAGRAM,
+                "content": "Reel copy",
+                "post_type": "reel",
+                "media": [{"type": "video", "url": "https://cdn.example.com/reel.mp4"}],
+            }
+        ],
+    )
+    assert r.status_code == 200, r.text
+
+    post = next(p for p in r.json()["posts"] if p["channel_id"] == INSTAGRAM)
+    assert post["post_type"] == "reel"
+    assert post["media"][0]["url"] == "https://cdn.example.com/reel.mp4"
+    assert post["generation_status"] == "generated"
+
+
+def test_appending_to_an_unknown_campaign_is_a_404(client) -> None:
+    r = _append(
+        client, "cmp_does_not_exist", [{"account_id": "company", "channel_id": INSTAGRAM, "content": "x"}]
+    )
+    assert r.status_code == 404
+
+
+def test_appending_nothing_is_refused(client) -> None:
+    """A silent no-op would read as success and change nothing."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "One"}],
+    ).json()
+
+    assert _append(client, campaign["id"], []).status_code == 422
+
+
+def test_appending_to_a_channel_that_already_published_is_refused(client, fake_n8n) -> None:
+    """Silently rewriting it would change what went out, or is about to."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "Shipped"}],
+    ).json()
+    post_id = campaign["posts"][0]["id"]
+    assert client.post(f"/api/ai/campaign-posts/{post_id}/publish", json={}).json()["ok"] is True
+
+    r = _append(
+        client,
+        campaign["id"],
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "Different words"}],
+    )
+    assert r.status_code == 409
+
+    unchanged = client.get(f"/api/ai/campaigns/{campaign['id']}").json()
+    assert unchanged["posts"][0]["effective_content"] == "Shipped"
+
+
+def test_re_adding_a_channel_replaces_its_copy(client) -> None:
+    """Re-adding a channel in the composer means "use this version"."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "First"}],
+    ).json()
+
+    r = _append(
+        client,
+        campaign["id"],
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "Second"}],
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["target_count"] == 1
+    assert r.json()["posts"][0]["effective_content"] == "Second"
+
+
+def test_an_appended_post_publishes(client, fake_n8n) -> None:
+    """The added post is a normal campaign post, not a dead row."""
+    campaign = _draft(
+        client,
+        [{"account_id": "company", "channel_id": LINKEDIN, "content": "One"}],
+    ).json()
+    r = _append(
+        client,
+        campaign["id"],
+        [{"account_id": "company", "channel_id": FACEBOOK, "content": "Two"}],
+    )
+    post_id = next(p["id"] for p in r.json()["posts"] if p["channel_id"] == FACEBOOK)
+
+    result = client.post(f"/api/ai/campaign-posts/{post_id}/publish", json={})
+    assert result.json()["ok"] is True, result.json()
+    assert fake_n8n.calls[0]["content"] == "Two"

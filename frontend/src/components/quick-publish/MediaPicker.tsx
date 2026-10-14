@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { MediaItem, MediaType } from "../../types/publishing";
 import {
-  MAX_UPLOAD_BYTES,
   deleteMedia,
+  limitForFile,
   uploadMediaWithHandle,
   type UploadHandle,
 } from "../../services/media";
+import { useUploadLimits } from "../../hooks/useUploadLimits";
 
 const IMAGE_ACCEPT = "image/png,image/jpeg,image/webp,image/gif";
 const VIDEO_ACCEPT = "video/mp4,video/quicktime,video/webm";
@@ -37,6 +38,10 @@ interface Pending {
  * publicly reachable address before it can actually be published. The backend
  * tells us whether the returned URL qualifies, and we surface that here
  * rather than letting the publish fail silently.
+ *
+ * The size ceiling is read from the server rather than hardcoded, and it is not
+ * one number: an image and a video get different limits, because a 25 MB cap
+ * meant for images was also rejecting every Facebook Reel worth uploading.
  */
 export function MediaPicker({
   media,
@@ -64,6 +69,7 @@ export function MediaPicker({
   const [localError, setLocalError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const limits = useUploadLimits();
 
   // In-flight uploads, so unmount can cancel them. Without this, navigating
   // away mid-upload left the request running and then setState on a dead
@@ -78,7 +84,7 @@ export function MediaPicker({
   }, []);
 
   // Object URLs are revoked when the row disappears. They pin the whole file in
-  // memory, so a page with a few 25 MB uploads was leaking hundreds of MB.
+  // memory, so a page with a few large uploads was leaking hundreds of MB.
   useEffect(() => {
     const urls = pending.map((p) => p.previewUrl).filter(Boolean);
     return () => {
@@ -99,6 +105,13 @@ export function MediaPicker({
     .filter(Boolean)
     .join(", ");
 
+  // One hint for both, so it never claims a ceiling the server has moved past.
+  const ceiling = acceptsImage && acceptsVideo
+    ? `images up to ${formatBytes(limits.image_max_bytes)}, videos up to ${formatBytes(limits.video_max_bytes)}`
+    : acceptsVideo
+      ? `up to ${formatBytes(limits.video_max_bytes)}`
+      : `up to ${formatBytes(limits.image_max_bytes)}`;
+
   // ---- uploads ------------------------------------------------------------
   async function handleFiles(files: FileList | File[]) {
     setLocalError(null);
@@ -114,9 +127,14 @@ export function MediaPicker({
       const isImage = file.type.startsWith("image/");
       const isVideo = file.type.startsWith("video/");
 
-      if (file.size > MAX_UPLOAD_BYTES) {
+      const maxBytes = limitForFile(file, limits);
+      if (file.size > maxBytes) {
+        // Says which kind was measured and what the ceiling is, because "too
+        // large" with no numbers is the message that sent this to support.
         setLocalError(
-          `${file.name} is ${formatBytes(file.size)}. The limit is ${formatBytes(MAX_UPLOAD_BYTES)}.`,
+          `${file.name} is ${formatBytes(file.size)}. The limit for ${
+            isVideo ? "a video" : "an image"
+          } is ${formatBytes(maxBytes)}.`,
         );
         continue;
       }
@@ -141,11 +159,15 @@ export function MediaPicker({
 
       setPending((p) => [...p, { id, name: file.name, percent: 0, previewUrl, isVideo }]);
 
-      const handle = uploadMediaWithHandle(file, (progress) => {
-        setPending((p) =>
-          p.map((item) => (item.id === id ? { ...item, percent: progress.percent } : item)),
-        );
-      });
+      const handle = uploadMediaWithHandle(
+        file,
+        (progress) => {
+          setPending((p) =>
+            p.map((item) => (item.id === id ? { ...item, percent: progress.percent } : item)),
+          );
+        },
+        limits,
+      );
       inFlight.current.add(handle);
 
       try {
@@ -278,7 +300,7 @@ export function MediaPicker({
               here, or <span className="dropzone__link">browse</span>
             </span>
             <span className="dropzone__hint">
-              {acceptLabel} · up to {formatBytes(MAX_UPLOAD_BYTES)}
+              {acceptLabel} · {ceiling}
             </span>
           </button>
 
@@ -442,6 +464,12 @@ function filename(url: string): string {
 }
 
 function formatBytes(bytes: number): string {
+  // GB is not decorative: the video ceiling is 4 GB, and rendering that as
+  // "4294967296 MB" is not a number anyone can act on.
+  if (bytes >= 1024 * 1024 * 1024) {
+    const gb = bytes / (1024 * 1024 * 1024);
+    return `${Number.isInteger(gb) ? gb : gb.toFixed(1)} GB`;
+  }
   if (bytes >= 1024 * 1024) return `${Math.round(bytes / (1024 * 1024))} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} bytes`;

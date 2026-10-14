@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DateTime } from "luxon";
 import { Card, Button, Field, Badge } from "../components/ui";
@@ -20,6 +20,7 @@ import { usePlatformCapability } from "../hooks/usePlatformCapability";
 import { campaignsApi } from "../services/ai";
 import { platformMeta } from "../lib/platforms";
 import { channelStatus } from "../types/channel";
+import type { Campaign } from "../types/ai";
 import type { MediaItem, PublishMode } from "../types/publishing";
 
 const DEFAULT_TIMEZONE = import.meta.env.VITE_DEFAULT_TIMEZONE ?? "Asia/Dhaka";
@@ -171,6 +172,35 @@ export function QuickPublishPage() {
   const [draftError, setDraftError] = useState<string | null>(null);
   const [draftSaved, setDraftSaved] = useState<string | null>(null);
 
+  // Where "Add to campaign draft" should put the post: a new campaign, or one
+  // that already exists. Before this, every addition created a new campaign, so
+  // building one across several sittings left a pile of half-campaigns.
+  const [targetCampaignId, setTargetCampaignId] = useState("");
+  const [campaigns, setCampaigns] = useState<Campaign[] | null>(null);
+  const [campaignsError, setCampaignsError] = useState<string | null>(null);
+
+  const refreshCampaigns = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const page = await campaignsApi.list({ limit: 100 }, signal);
+      setCampaigns(page.items ?? []);
+      setCampaignsError(null);
+    } catch (err) {
+      if ((err as Error).name === "AbortError") return;
+      setCampaignsError((err as Error).message);
+    }
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void refreshCampaigns(controller.signal);
+    return () => controller.abort();
+  }, [refreshCampaigns]);
+
+  const targetCampaign = useMemo(
+    () => campaigns?.find((c) => c.id === targetCampaignId) ?? null,
+    [campaigns, targetCampaignId],
+  );
+
   const addToDraft = () => {
     if (!accountId || !channelId || !contentValid) return;
     const key = `${accountId}::${channelId}`;
@@ -202,32 +232,87 @@ export function QuickPublishPage() {
     setPostType(row.post_type);
   };
 
+  const toDraftPayload = (row: DraftRow) => ({
+    account_id: row.account_id,
+    channel_id: row.channel_id,
+    content: row.content,
+    media: row.media,
+    post_type: row.post_type,
+  });
+
+  /** The composed post, as a draft row, without staging it in the list first. */
+  const composedAsDraft = (): DraftRow | null => {
+    if (!accountId || !channelId || !contentValid) return null;
+    return {
+      key: `${accountId}::${channelId}`,
+      account_id: accountId,
+      channel_id: channelId,
+      content: content.trim(),
+      media: media.map((m) => ({ type: m.type, url: m.url, alt_text: m.alt_text })),
+      post_type: postType,
+    };
+  };
+
   const saveDraftCampaign = async () => {
     if (!drafts.length) return;
     setSavingDraft(true);
     setDraftError(null);
     try {
-      const campaign = await campaignsApi.create({
-        name: draftName.trim() || undefined,
-        topic: draftName.trim() || "Campaign draft",
-        drafts: drafts.map((d) => ({
-          account_id: d.account_id,
-          channel_id: d.channel_id,
-          content: d.content,
-          media: d.media,
-          post_type: d.post_type,
-        })),
-        targets: [],
-      });
-      setDraftSaved(campaign.id);
+      const payload = drafts.map(toDraftPayload);
+
+      if (targetCampaignId) {
+        // Append to the campaign the operator picked, rather than opening a
+        // second one that duplicates its name.
+        const campaign = await campaignsApi.addDrafts(targetCampaignId, payload);
+        setDraftSaved(campaign.id);
+      } else {
+        const campaign = await campaignsApi.create({
+          name: draftName.trim() || undefined,
+          topic: draftName.trim() || "Campaign draft",
+          drafts: payload,
+          targets: [],
+        });
+        setDraftSaved(campaign.id);
+      }
+
       setDrafts([]);
       setDraftName("");
+      await refreshCampaigns();
     } catch (err) {
       setDraftError((err as Error).message);
     } finally {
       setSavingDraft(false);
     }
   };
+
+  /**
+   * Send the post straight into the selected campaign without staging it.
+   *
+   * The common case after the first post: the operator is composing one thing
+   * at a time and the campaign already exists, so making them name it and press
+   * save twice per post was pure friction.
+   */
+  const addCurrentToCampaign = async () => {
+    const row = composedAsDraft();
+    if (!row || !targetCampaignId) return;
+    setSavingDraft(true);
+    setDraftError(null);
+    try {
+      await campaignsApi.addDrafts(targetCampaignId, [toDraftPayload(row)]);
+      setDraftSaved(targetCampaignId);
+      setContent("");
+      setMedia([]);
+      setPostType(null);
+    } catch (err) {
+      setDraftError((err as Error).message);
+    } finally {
+      setSavingDraft(false);
+    }
+  };
+
+  const canAddToCampaign = Boolean(
+    targetCampaignId && accountId && channelId && contentValid && !savingDraft,
+  );
 
   const overLimit = capability?.text_limit != null && trimmedLength > capability.text_limit;
 
@@ -533,20 +618,81 @@ export function QuickPublishPage() {
               Publishing goes through your configured engine and Buffer.
             </p>
 
-            {(drafts.length > 0 || draftSaved) && (
+            {(drafts.length > 0 || draftSaved || targetCampaignId) && (
               <Card className="draft-panel" padded>
                 <h3 className="draft-panel__title">Campaign draft</h3>
-                <p className="muted">
-                  {drafts.length
-                    ? `${drafts.length} channel${drafts.length === 1 ? "" : "s"} ready. Name it and save, then find it in Campaigns to add media or edit.`
-                    : "Saved. Open it in Campaigns to edit or add media."}
-                </p>
+
+                <Field
+                  label="Add to"
+                  htmlFor="draft-target"
+                  error={campaignsError}
+                >
+                  <select
+                    id="draft-target"
+                    className="input"
+                    value={targetCampaignId}
+                    onChange={(e) => setTargetCampaignId(e.target.value)}
+                  >
+                    <option value="">New campaign…</option>
+                    {(campaigns ?? []).map((campaign) => (
+                      <option key={campaign.id} value={campaign.id}>
+                        {campaign.name} · {campaign.target_count} post
+                        {campaign.target_count === 1 ? "" : "s"}
+                        {campaign.status !== "draft" ? ` · ${campaign.status}` : ""}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                {campaignsError && (
+                  <p className="field__hint">
+                    Existing campaigns could not be loaded, so only a new campaign can be
+                    created here right now.
+                  </p>
+                )}
+
+                {targetCampaign && (
+                  <>
+                    <p className="muted">
+                      Posts will be added to <strong>{targetCampaign.name}</strong>.
+                    </p>
+                    <Button
+                      variant="primary"
+                      fullWidth
+                      loading={savingDraft}
+                      disabled={!canAddToCampaign}
+                      onClick={addCurrentToCampaign}
+                    >
+                      Add this post to {targetCampaign.name}
+                    </Button>
+                    <p className="field__hint">
+                      Or add it to the list below and add several posts in one go.
+                    </p>
+                  </>
+                )}
+
+                {drafts.length > 0 && (
+                  <p className="muted">
+                    {drafts.length} channel{drafts.length === 1 ? "" : "s"} ready.
+                    {targetCampaignId
+                      ? ` They will be added to ${targetCampaign?.name}.`
+                      : " Name it and save, then find it in Campaigns to add media or edit."}
+                  </p>
+                )}
+
+                {drafts.length === 0 && !targetCampaignId && !draftSaved && (
+                  <p className="muted">
+                    Choose a campaign above to add posts to one you already started.
+                  </p>
+                )}
 
                 {draftError && <p className="notice notice--error">{draftError}</p>}
 
                 {draftSaved && !drafts.length && (
                   <p className="notice notice--ok">
-                    Saved to Campaigns.{" "}
+                    {draftSaved === targetCampaignId && targetCampaign
+                      ? `Added to ${targetCampaign.name}.`
+                      : "Saved to Campaigns."}{" "}
                     <Link to="/campaigns">Open campaigns</Link>
                   </p>
                 )}
@@ -589,23 +735,37 @@ export function QuickPublishPage() {
 
                 {drafts.length > 0 && (
                   <div className="draft-panel__save">
-                    <Field label="Campaign name" htmlFor="draft-name">
-                      <input
-                        id="draft-name"
-                        className="input"
-                        value={draftName}
-                        onChange={(e) => setDraftName(e.target.value)}
-                        placeholder="October product launch"
-                      />
-                    </Field>
-                    <Button
-                      variant="primary"
-                      fullWidth
-                      loading={savingDraft}
-                      onClick={saveDraftCampaign}
-                    >
-                      Save as campaign draft
-                    </Button>
+                    {targetCampaignId ? (
+                      <Button
+                        variant="primary"
+                        fullWidth
+                        loading={savingDraft}
+                        onClick={saveDraftCampaign}
+                      >
+                        Add {drafts.length} post{drafts.length === 1 ? "" : "s"} to{" "}
+                        {targetCampaign?.name}
+                      </Button>
+                    ) : (
+                      <>
+                        <Field label="Campaign name" htmlFor="draft-name">
+                          <input
+                            id="draft-name"
+                            className="input"
+                            value={draftName}
+                            onChange={(e) => setDraftName(e.target.value)}
+                            placeholder="October product launch"
+                          />
+                        </Field>
+                        <Button
+                          variant="primary"
+                          fullWidth
+                          loading={savingDraft}
+                          onClick={saveDraftCampaign}
+                        >
+                          Save as campaign draft
+                        </Button>
+                      </>
+                    )}
                   </div>
                 )}
               </Card>

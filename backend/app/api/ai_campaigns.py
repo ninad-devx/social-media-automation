@@ -25,6 +25,7 @@ from app.schemas.ai import (
     BulkScheduleOverride,
     BulkScheduleRequest,
     CampaignCreate,
+    CampaignDraftsAppend,
     CampaignListItem,
     CampaignOut,
     CampaignPage,
@@ -223,6 +224,27 @@ def update_campaign(campaign_id: str, payload: CampaignUpdate, db: DbDep, settin
 def delete_campaign(campaign_id: str, db: DbDep, settings: SettingsDep) -> Response:
     _service(db, settings).delete(campaign_id)
     return Response(status_code=204)
+
+
+@router.post("/campaigns/{campaign_id}/drafts", response_model=CampaignOut, dependencies=[ApiKeyDep])
+def append_campaign_drafts(
+    campaign_id: str,
+    payload: CampaignDraftsAppend,
+    db: DbDep,
+    settings: SettingsDep,
+) -> CampaignOut:
+    """Add posts composed in Quick Publish to a campaign that already exists.
+
+    Campaigns used to be write-once: Quick Publish could only create one, so
+    adding a second channel meant either a second campaign or hand-editing the
+    first in place. This is the endpoint that makes "add to the campaign I
+    already have" a single call.
+    """
+    service = _service(db, settings)
+    campaign = service.append_drafts(
+        campaign_id, [d.model_dump() for d in payload.drafts]
+    )
+    return _campaign_out(campaign, db)
 
 
 # --------------------------------------------------------------------------- #

@@ -178,8 +178,34 @@ class Settings(BaseSettings):
     # as a broken thumbnail, while still serving the real file to Buffer. The
     # browser can always reach the API directly, so previews point here.
     preview_media_base_url: str = "http://localhost:8000/api/media"
-    # Hard ceiling for a single upload (bytes). Default 25 MiB.
+    # Hard ceiling for a single IMAGE upload (bytes). Default 25 MiB.
+    #
+    # Images are small and arrive in one request, so this stays low. Videos get
+    # their own, far larger ceiling below - see max_video_upload_bytes.
     max_upload_bytes: int = 25 * 1024 * 1024
+    # Hard ceiling for a single VIDEO upload (bytes). Default 4 GiB.
+    #
+    # Facebook accepts up to 4 GB for a Reel and considerably more for an
+    # uploaded video, so 25 MiB was rejecting files Facebook itself would have
+    # taken. Videos above this ceiling must go through the chunked upload
+    # endpoint; it exists because a single multi-gigabyte request is dropped by
+    # every proxy in front of the app, including Render's.
+    max_video_upload_bytes: int = 4 * 1024 * 1024 * 1024
+    # Size of one chunk in the chunked upload protocol (bytes). Default 8 MiB.
+    #
+    # This is the browser-to-server split and has nothing to do with the part
+    # size used to write the finished object to S3; see `chunked_upload_bytes`.
+    upload_chunk_bytes: int = 8 * 1024 * 1024
+    # Files above this size are uploaded in chunks rather than in one request.
+    # Default 25 MiB, which is where the old single-request ceiling was.
+    upload_chunk_threshold_bytes: int = 25 * 1024 * 1024
+    # How long an unfinished chunked upload is kept before it is swept.
+    upload_session_ttl_hours: int = 24
+    # Where chunks are staged while an upload is in progress.
+    #
+    # Defaults to MEDIA_STORAGE_DIR/uploads. A partial multi-gigabyte video is
+    # held here, so it needs as much free disk as the largest video you accept.
+    upload_staging_dir: str = ""
 
     # ---- public media URLs (for Buffer) ----------------------------------
     # Buffer downloads attachments from the public internet with no credential,
@@ -304,6 +330,33 @@ class Settings(BaseSettings):
     @property
     def media_path(self) -> Path:
         return Path(self.media_storage_dir).expanduser().resolve()
+
+    @property
+    def upload_staging_path(self) -> Path:
+        """Where in-progress chunked uploads are assembled."""
+        if self.upload_staging_dir.strip():
+            return Path(self.upload_staging_dir).expanduser().resolve()
+        return self.media_path / "uploads"
+
+    @property
+    def chunked_upload_bytes(self) -> int:
+        """Chunk size for the browser-to-server protocol.
+
+        Deliberately independent of the part size used when the assembled file
+        is written to object storage: the browser-to-server split has to fit
+        inside a proxy's request limit, while the S3 part size has to satisfy
+        S3's own 5 MiB minimum, and neither constrains the other.
+
+        Floored at 64 KiB so a misconfigured value cannot turn a 4 GB upload
+        into half a million requests.
+        """
+        return max(64 * 1024, int(self.upload_chunk_bytes))
+
+    def upload_limit_for(self, kind: str) -> int:
+        """Ceiling for one file of the given sniffed kind."""
+        if kind == "video":
+            return int(self.max_video_upload_bytes)
+        return int(self.max_upload_bytes)
 
     @property
     def media_base_url(self) -> str:

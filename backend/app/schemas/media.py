@@ -38,3 +38,40 @@ class MediaAssetOut(BaseModel):
     url: str
     public: bool
     created_at: datetime | None = None
+
+
+class UploadLimitsOut(BaseModel):
+    """What this deployment accepts, so the UI never invents a ceiling.
+
+    The browser used to hardcode 25 MB while the server enforced its own
+    number, so raising one of them silently left the other refusing the file.
+    The limits are read from settings on every call instead.
+    """
+
+    image_max_bytes: int
+    video_max_bytes: int
+    #: Above this size a file is sent as chunks rather than one request.
+    chunk_threshold_bytes: int
+    chunk_bytes: int
+
+
+class UploadStartRequest(BaseModel):
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(gt=0)
+
+
+class UploadStatusOut(BaseModel):
+    """State of an in-progress upload, so a client can resume."""
+
+    upload_id: str
+    filename: str
+    size: int
+    chunk_size: int
+    chunk_count: int
+    received: list[int] = Field(default_factory=list)
+    received_bytes: int = 0
+    complete: bool = False
+
+
+class UploadChunkOut(UploadStatusOut):
+    """Acknowledgement for one stored chunk."""

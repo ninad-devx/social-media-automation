@@ -222,34 +222,7 @@ class CampaignService:
 
         # Attach the hand-written copy and media to each matching channel.
         if drafts:
-            # The session does not autoflush, so the rows just added above are
-            # not visible to a query until they are written out.
-            self._db.flush()
-            posts = list(
-                self._db.scalars(
-                    select(CampaignPost).where(CampaignPost.campaign_id == campaign.id)
-                ).all()
-            )
-            by_channel = {(p.account_id, p.channel_id): p for p in posts}
-
-            for draft in drafts:
-                post = by_channel.get((draft["account_id"], draft["channel_id"]))
-                if post is None:
-                    continue
-                post.generated_content = str(draft["content"]).strip()
-                post.generation_status = "generated"
-                if draft.get("media"):
-                    post.media_json = json.dumps(draft["media"])
-                if draft.get("hashtags"):
-                    post.hashtags = json.dumps(
-                        [str(t).lstrip("#").strip() for t in draft["hashtags"] if str(t).strip()]
-                    )
-                # Carried through from Quick Publish. Previously this key was
-                # accepted by nothing and dropped by Pydantic, so the format
-                # silently reverted to the platform default.
-                post_type = (draft.get("post_type") or "").strip() or None
-                if post_type:
-                    post.post_type = post_type
+            self._apply_drafts(campaign, drafts)
 
         self._db.commit()
 
@@ -258,6 +231,83 @@ class CampaignService:
             extra={"context": {"campaign_id": campaign.id, "targets": len(resolved)}},
         )
         return campaign
+
+    def append_drafts(self, campaign_id: str, drafts: list[dict]) -> Campaign:
+        """Add hand-written posts to a campaign that already exists.
+
+        Quick Publish composes one post at a time, so a campaign is usually
+        assembled over several sittings. Without this, every addition created a
+        second campaign and the operator had to merge them by hand.
+
+        Channels already in the campaign keep their rows; a channel sent twice
+        is replaced by the newer copy, which is what re-adding a channel in the
+        composer is meant to do.
+        """
+        campaign = self.get(campaign_id)
+
+        by_channel: dict[tuple[str, str], dict] = {}
+        for d in drafts:
+            by_channel[(d["account_id"], d["channel_id"])] = d
+        if not by_channel:
+            raise AppError(ErrorCode.INVALID_REQUEST, 400, field="drafts")
+
+        pending = list(by_channel.values())
+        resolved = self.resolve_targets(
+            [{"account_id": d["account_id"], "channel_id": d["channel_id"]} for d in pending]
+        )
+
+        # Pruning is off: this is an addition, not a redefinition of the
+        # campaign, so posts for channels that are not in this batch must
+        # survive untouched.
+        self._ensure_post_rows(campaign, resolved, reset_content=False, prune=False)
+        self._apply_drafts(campaign, pending)
+
+        self._db.commit()
+
+        logger.info(
+            "ai.campaign_drafts_appended",
+            extra={"context": {"campaign_id": campaign.id, "added": len(pending)}},
+        )
+        return campaign
+
+    def _apply_drafts(self, campaign: Campaign, drafts: list[dict]) -> None:
+        """Write hand-written copy, media, hashtags and format onto post rows."""
+        # The session does not autoflush, so rows just added by
+        # _ensure_post_rows are not visible to a query until they are written.
+        self._db.flush()
+        posts = list(
+            self._db.scalars(
+                select(CampaignPost).where(CampaignPost.campaign_id == campaign.id)
+            ).all()
+        )
+        by_channel = {(p.account_id, p.channel_id): p for p in posts}
+
+        for draft in drafts:
+            post = by_channel.get((draft["account_id"], draft["channel_id"]))
+            if post is None:
+                continue
+
+            if post.publishing_status in ("published", "scheduled"):
+                # Silently rewriting this would change what the operator
+                # already sent, or is about to send, from under them.
+                raise AppError(ErrorCode.INVALID_REQUEST, 409, field="drafts")
+
+            post.generated_content = str(draft["content"]).strip()
+            post.generation_status = "generated"
+            post.error_code = None
+            post.error_message = None
+            if draft.get("media"):
+                post.media_json = json.dumps(draft["media"])
+            if draft.get("hashtags"):
+                post.hashtags = json.dumps(
+                    [str(t).lstrip("#").strip() for t in draft["hashtags"] if str(t).strip()]
+                )
+            # Carried through from Quick Publish. Previously this key was
+            # accepted by nothing and dropped by Pydantic, so the format
+            # silently reverted to the platform default.
+            post_type = (draft.get("post_type") or "").strip() or None
+            if post_type:
+                post.post_type = post_type
 
     def update(self, campaign_id: str, data: dict) -> Campaign:
         campaign = self.get(campaign_id)
@@ -285,8 +335,15 @@ class CampaignService:
         resolved: list[tuple[Account, Channel]],
         *,
         reset_content: bool,
+        prune: bool = True,
     ) -> None:
-        """Create missing post rows. Existing edits are never clobbered."""
+        """Create missing post rows. Existing edits are never clobbered.
+
+        `prune=False` keeps rows for channels that are not in `resolved`. That
+        matters when drafts are appended to an existing campaign: the batch only
+        names the new channels, and treating the rest as "no longer targeted"
+        would delete posts the operator already wrote.
+        """
         existing = {
             (p.account_id, p.channel_id): p for p in self.posts_for(campaign.id)
         }
@@ -315,7 +372,7 @@ class CampaignService:
                 post.error_message = None
 
         for key, post in existing.items():
-            if key not in wanted:
+            if key not in wanted and prune:
                 # No longer targeted: drop it unless it was already published.
                 if post.publishing_status in ("draft", "failed"):
                     self._db.delete(post)

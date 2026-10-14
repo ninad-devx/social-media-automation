@@ -236,6 +236,7 @@ Strongly recommended:
 | `DEFAULT_TIMEZONE` | e.g. `Asia/Dhaka` |
 
 Optional: `AI_ENCRYPTION_KEY` (legacy), `MAX_UPLOAD_BYTES`,
+`MAX_VIDEO_UPLOAD_BYTES`, `UPLOAD_CHUNK_BYTES`,
 `AI_MAX_CONCURRENCY`, `BUFFER_API_BASE_URL`.
 
 ### Startup validation
@@ -446,6 +447,42 @@ and it only preserves media — the database still needs PostgreSQL.
 
 Not wired up. `backend/app/services/storage.py` has an S3 backend and a local
 backend only; adding a third would mean new code. Use Option A or B.
+
+---
+
+## 10a. Large videos and reels
+
+Facebook accepts a 4 GB Reel and a considerably larger uploaded video. Those
+files do not fit in a single HTTP request: the reverse proxy in front of the
+app caps the body long before that, and a browser gives up somewhere around the
+two-minute mark. So uploads above `UPLOAD_CHUNK_THRESHOLD_BYTES` are sent in
+chunks and assembled server-side.
+
+```ini
+MAX_UPLOAD_BYTES=26214400              # images, 25 MB
+MAX_VIDEO_UPLOAD_BYTES=4294967296      # videos, 4 GB
+UPLOAD_CHUNK_THRESHOLD_BYTES=26214400  # above this, upload in chunks
+UPLOAD_CHUNK_BYTES=8388608             # 8 MB per request
+UPLOAD_SESSION_TTL_HOURS=24            # abandoned uploads are swept after this
+```
+
+**Check `UPLOAD_CHUNK_BYTES` against your proxy's request-body limit.** Render
+and most CDNs cap a request body somewhere in the 32-100 MB range; a chunk
+larger than that fails while the rest of the file is still uploading. 8 MB is
+comfortably under every limit in common use. There is no need to raise it —
+more chunks cost round trips, not throughput.
+
+**The staging directory needs disk.** Chunks are written to
+`UPLOAD_STAGING_DIR` (default `MEDIA_STORAGE_DIR/uploads`) before the finished
+file is moved to its final location, so it needs free space for the largest
+video you accept. On Render's free tier that directory lives on the ephemeral
+filesystem: a 4 GB upload will fail on a small instance, and whatever was
+staged is lost on redeploy. Either lower `MAX_VIDEO_UPLOAD_BYTES` to what your
+instance can hold, or attach a disk (§10 Option B) and point
+`UPLOAD_STAGING_DIR` at it.
+
+With `MEDIA_STORAGE_BACKEND=s3` the finished file is written to the bucket with
+a multipart upload, so the file is never held in memory on the way through.
 
 ---
 

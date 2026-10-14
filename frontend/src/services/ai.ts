@@ -5,6 +5,7 @@ import type {
   AiProvider,
   BulkResult,
   Campaign,
+  CampaignDraft,
   CampaignPage,
   CampaignPayload,
   CampaignPost,
@@ -94,6 +95,16 @@ export const campaignsApi = {
   update: (id: string, payload: Partial<CampaignPayload>) =>
     api.patch<Campaign>(`/api/ai/campaigns/${id}`, payload),
   remove: (id: string) => api.del<void>(`/api/ai/campaigns/${id}`),
+
+  /**
+   * Add posts composed in Quick Publish to a campaign that already exists.
+   *
+   * Creating a campaign per post was the only option before, so a campaign
+   * assembled over several sittings ended up as several campaigns to merge by
+   * hand.
+   */
+  addDrafts: (id: string, drafts: CampaignDraft[]) =>
+    api.post<Campaign>(`/api/ai/campaigns/${id}/drafts`, { drafts }),
 
   generate: (id: string, providerId?: string) =>
     api.post<Campaign>(`/api/ai/campaigns/${id}/generate`, {

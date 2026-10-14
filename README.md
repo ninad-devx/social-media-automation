@@ -321,12 +321,18 @@ For production, implement the `MediaStorage` interface in
 
 ### Endpoints
 
-| Method | Path                 | Purpose                          |
-| ------ | -------------------- | -------------------------------- |
-| POST   | `/api/media/upload`  | Upload a file (multipart)        |
-| GET    | `/api/media`         | List uploads                     |
-| GET    | `/api/media/{id}`    | Serve a file                     |
-| DELETE | `/api/media/{id}`    | Remove a file                    |
+| Method | Path                                 | Purpose                              |
+| ------ | ------------------------------------ | ------------------------------------ |
+| POST   | `/api/media/upload`                  | Upload a file (multipart)            |
+| GET    | `/api/media/upload-limits`           | Ceilings this deployment enforces    |
+| POST   | `/api/media/uploads`                 | Start a chunked upload               |
+| PUT    | `/api/media/uploads/{id}/chunks/{n}` | Store one chunk                      |
+| GET    | `/api/media/uploads/{id}`            | Chunks received so far (resume)      |
+| POST   | `/api/media/uploads/{id}/complete`   | Validate and store the assembled file |
+| DELETE | `/api/media/uploads/{id}`            | Discard an unfinished upload         |
+| GET    | `/api/media`                         | List uploads                         |
+| GET    | `/api/media/{id}`                    | Serve a file                         |
+| DELETE | `/api/media/{id}`                    | Remove a file                        |
 
 **Security measures applied**
 
@@ -335,8 +341,31 @@ For production, implement the `MediaStorage` interface in
 - Stored names are **generated**, so a filename like `../../../evil.png` cannot
   influence the path.
 - `X-Content-Type-Options: nosniff` and a sandboxing CSP on every response.
-- 25 MB ceiling enforced while streaming, so oversized files never fill memory.
+- Per-kind ceilings enforced while streaming, so an oversized file never fills
+  memory: 25 MB for images, 4 GB for videos.
 - Path traversal and unknown ids return 404.
+
+### Large videos and reels
+
+Facebook takes a 4 GB Reel, which does not fit in one HTTP request — the proxy
+in front of the app caps the body, and the browser gives up long before that.
+Anything above `UPLOAD_CHUNK_THRESHOLD_BYTES` is therefore sent as chunks,
+assembled into a staging file, and only becomes an asset once the last chunk
+lands.
+
+- **Images and videos have different ceilings.** One 25 MB limit for both was
+  rejecting files Facebook itself would have accepted.
+- **A chunk is addressed by index, not arrival order.** A dropped connection on
+  chunk 380 of 500 costs one chunk, and re-sending a chunk is harmless.
+- **The bytes that arrive are re-validated**, not just the declared size: the
+  file is sniffed again at `complete` and measured against the limit for the
+  kind it actually is.
+- **Writing to S3 is multipart**, so a multi-gigabyte file is never read into
+  memory on its way to the bucket.
+
+See `DEPLOYMENT.md` §10a before deploying large uploads — the staging directory
+needs disk for the largest video you accept, and `UPLOAD_CHUNK_BYTES` has to sit
+under your proxy's request-body limit.
 
 ---
 
@@ -366,6 +395,18 @@ task-runner launcher.
 
 Generate a draft for every selected channel at once, review them, then publish only what
 you approve. **Nothing is ever published automatically.**
+
+### Adding hand-written posts to a campaign
+
+Quick Publish composes one post at a time, so a campaign is usually built over
+several sittings. The **Add to** selector in the campaign draft panel takes an
+existing campaign; choosing one and pressing **Add this post** appends to it
+instead of creating a new campaign. Posts already in the campaign are kept, and
+adding a channel that is already there replaces its copy.
+
+Under the hood that is `POST /api/ai/campaigns/{id}/drafts`. A channel whose post
+has already been published or scheduled is refused rather than silently
+rewritten, because the alternative is changing what went out.
 
 ### 1. Encrypt provider keys first
 

@@ -14,7 +14,6 @@ Security rules enforced here:
 """
 from __future__ import annotations
 
-import io
 import secrets
 import shutil
 from abc import ABC, abstractmethod
@@ -28,6 +27,16 @@ from app.services import media_signing
 
 
 logger = get_logger("app.media")
+
+#: Enough bytes to cover every signature we inspect.
+_HEAD_SNIFF_BYTES = 32
+
+#: Objects at or below this go up in a single PUT. Above it, multipart.
+_S3_SINGLE_PUT_LIMIT = 64 * 1024 * 1024
+
+#: Part size for a multipart object. S3 requires at least 5 MiB for every part
+#: except the last.
+_S3_PART_SIZE = 16 * 1024 * 1024
 
 
 # --------------------------------------------------------------------------- #
@@ -68,6 +77,60 @@ class UnsupportedMedia(ValueError):
 
 class MediaTooLarge(ValueError):
     """Raised when a file exceeds the configured limit."""
+
+
+def _remaining(stream: BinaryIO) -> int:
+    """Bytes left in a stream, or 0 when that cannot be determined cheaply.
+
+    A file opened from disk reports its real size, which is what lets S3 pick
+    between a single PUT and a multipart upload. An upload socket does not, and
+    0 there means "assume it is large", which is the safe direction.
+    """
+    try:
+        current = stream.tell()
+        stream.seek(0, 2)
+        end = stream.tell()
+        stream.seek(current)
+        return max(0, end - current)
+    except (AttributeError, OSError, ValueError):
+        return 0
+
+
+class _PrefixedStream:
+    """Re-attaches bytes already read from the front of a stream.
+
+    Sniffing the content type consumes the first few bytes. Wrapping the
+    remainder this way keeps the response byte-identical to the stored object
+    instead of starting 32 bytes in.
+    """
+
+    def __init__(self, head: bytes, rest: BinaryIO) -> None:
+        self._head = head
+        self._rest = rest
+
+    def read(self, size: int = -1) -> bytes:
+        if not self._head:
+            return self._rest.read(size)
+        if size is None or size < 0:
+            head, self._head = self._head, b""
+            return head + self._rest.read()
+        head, self._head = self._head[:size], self._head[size:]
+        if len(head) < size:
+            head += self._rest.read(size - len(head))
+        return head
+
+    def close(self) -> None:
+        self._head = b""
+        self._rest.close()
+
+    def __iter__(self):
+        # Starlette streams a response body by iterating the file object, so
+        # this is what makes a remote object servable at all.
+        while True:
+            block = self.read(64 * 1024)
+            if not block:
+                return
+            yield block
 
 
 # --------------------------------------------------------------------------- #
@@ -151,15 +214,20 @@ class LocalDiskStorage(MediaStorage):
         with target.open("wb") as fh:
             shutil.copyfileobj(stream, fh, length=1024 * 256)
 
+        # Measured, not trusted: the size recorded against the asset is what the
+        # UI shows and what the publish path checks, and a chunked upload's
+        # declared total can disagree with what actually landed on disk.
+        stored_size = target.stat().st_size
+
         logger.info(
             "media.stored",
-            extra={"context": {"asset_id": asset_id, "kind": kind.kind, "size": size, "mime": kind.mime}},
+            extra={"context": {"asset_id": asset_id, "kind": kind.kind, "size": stored_size, "mime": kind.mime}},
         )
         return StoredMedia(
             asset_id=asset_id,
             kind=kind.kind,
             mime=kind.mime,
-            size=size,
+            size=stored_size,
             original_name=original_name,
             public_url=self.public_url(asset_id),
         )
@@ -258,38 +326,111 @@ class S3ObjectStorage(MediaStorage):
     # -- interface --------------------------------------------------------- #
     def save(self, stream: BinaryIO, kind: MediaKind, original_name: str, size: int) -> StoredMedia:
         asset_id = self._new_id(kind.extension)
-        data = stream.read()
-        self._client.put_object(
-            Bucket=self._bucket,
-            Key=asset_id,
-            Body=data,
-            ContentType=kind.mime,
-            # Objects are public because Buffer fetches them unauthenticated.
-            CacheControl="public, max-age=31536000, immutable",
-        )
+        stored_size = self._put(asset_id, stream, kind)
         logger.info(
             "media.stored_s3",
-            extra={"context": {"asset_id": asset_id, "kind": kind.kind, "size": size, "bucket": self._bucket}},
+            extra={"context": {"asset_id": asset_id, "kind": kind.kind, "size": stored_size, "bucket": self._bucket}},
         )
         return StoredMedia(
             asset_id=asset_id,
             kind=kind.kind,
             mime=kind.mime,
-            size=size,
+            size=stored_size,
             original_name=original_name,
             public_url=self.public_url(asset_id),
         )
+
+    def _put(self, key: str, stream: BinaryIO, kind: MediaKind) -> int:
+        """Write one object, streaming it in parts. Returns the byte count.
+
+        This used to be a single `stream.read()` fed to `put_object`, which
+        pulls the entire file into RAM. That is survivable for a 2 MB logo and
+        fatal for the 4 GB Facebook Reel this backend now accepts: the worker
+        is killed by the OOM killer long before the upload finishes.
+
+        boto3's managed `upload_fileobj` would also stream, but it reads its
+        part size from a TransferConfig and hides the progress, so the multipart
+        sequence is spelled out here instead.
+        """
+        remaining = _remaining(stream)
+        if 0 < remaining <= _S3_SINGLE_PUT_LIMIT:
+            body = stream.read()
+            self._client.put_object(
+                Bucket=self._bucket,
+                Key=key,
+                Body=body,
+                ContentType=kind.mime,
+                # Objects are public because Buffer fetches them unauthenticated.
+                CacheControl="public, max-age=31536000, immutable",
+            )
+            return len(body)
+
+        created = self._client.create_multipart_upload(
+            Bucket=self._bucket,
+            Key=key,
+            ContentType=kind.mime,
+            CacheControl="public, max-age=31536000, immutable",
+        )
+        upload_id = created["UploadId"]
+
+        parts: list[dict] = []
+        part_number = 0
+        written = 0
+        try:
+            while True:
+                block = stream.read(_S3_PART_SIZE)
+                if not block:
+                    break
+                part_number += 1
+                written += len(block)
+                uploaded = self._client.upload_part(
+                    Bucket=self._bucket,
+                    Key=key,
+                    UploadId=upload_id,
+                    PartNumber=part_number,
+                    Body=block,
+                )
+                parts.append({"ETag": uploaded["ETag"], "PartNumber": part_number})
+        except Exception:
+            # An abandoned multipart upload keeps costing storage at the
+            # provider's expense until it is explicitly aborted.
+            self._abort_multipart(key, upload_id)
+            raise
+
+        self._client.complete_multipart_upload(
+            Bucket=self._bucket,
+            Key=key,
+            UploadId=upload_id,
+            MultipartUpload={"Parts": parts},
+        )
+        return written
+
+    def _abort_multipart(self, key: str, upload_id: str) -> None:
+        try:
+            self._client.abort_multipart_upload(
+                Bucket=self._bucket, Key=key, UploadId=upload_id
+            )
+        except Exception:  # pragma: no cover - best effort cleanup
+            logger.warning(
+                "media.multipart_abort_failed",
+                extra={"context": {"key": key, "bucket": self._bucket}},
+            )
 
     def open(self, asset_id: str) -> tuple[BinaryIO, MediaKind, int] | None:
         try:
             obj = self._client.get_object(Bucket=self._bucket, Key=asset_id)
         except Exception:
             return None
-        body = obj["Body"].read()
-        kind = sniff(body[:32])
+        body = obj["Body"]
+        # The head is pulled only to sniff the type, then handed back to the
+        # stream so the response still starts at byte zero.
+        head = body.read(_HEAD_SNIFF_BYTES)
+        kind = sniff(head)
         if kind is None:
+            body.close()
             return None
-        return io.BytesIO(body), kind, len(body)
+        size = int(obj.get("ContentLength") or 0)
+        return _PrefixedStream(head, body), kind, size
 
     def resolve(self, asset_id: str) -> Path | None:
         # There is no local path for remote objects. Callers that only need to
